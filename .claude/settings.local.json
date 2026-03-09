@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(findstr:*)"
+      "Bash(findstr:*)",
+      "Bash(grep -c \"^**Critical Details**$\" /home/khanh.dao/Projects/SideProjects/GoBlob/implementation_roadmap.md | head -20)"
     ]
   }
 }
