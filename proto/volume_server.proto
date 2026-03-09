@@ -1,0 +1,103 @@
+syntax = "proto3";
+package volume_server_pb;
+option go_package = "goblob/pb/volume_server_pb";
+
+service VolumeServer {
+    rpc AllocateVolume(AllocateVolumeRequest) returns (AllocateVolumeResponse) {}
+    rpc VolumeDelete(VolumeDeleteRequest) returns (VolumeDeleteResponse) {}
+    rpc VolumeCopy(VolumeCopyRequest) returns (stream VolumeCopyResponse) {}
+    rpc VolumeMarkReadonly(VolumeMarkReadonlyRequest) returns (VolumeMarkReadonlyResponse) {}
+    rpc VolumeStatus(VolumeStatusRequest) returns (VolumeStatusResponse) {}
+    rpc VolumeCompact(VolumeCompactRequest) returns (VolumeCompactResponse) {}
+    rpc VolumeCommitCompact(VolumeCommitCompactRequest) returns (VolumeCommitCompactResponse) {}
+    rpc ReadAllNeedles(ReadAllNeedlesRequest) returns (stream ReadAllNeedlesResponse) {}
+}
+
+message AllocateVolumeRequest {
+    uint32 volume_id = 1;
+    string collection = 2;
+    string replication = 3;
+    string ttl = 4;
+    string disk_type = 5;
+    int64 preallocate = 6;
+    uint32 memory_map_size_mb = 7;
+}
+
+message AllocateVolumeResponse {
+    string error = 1;
+}
+
+message VolumeDeleteRequest {
+    uint32 volume_id = 1;
+    string collection = 2;
+}
+
+message VolumeDeleteResponse {
+    string error = 1;
+}
+
+message VolumeCopyRequest {
+    uint32 volume_id = 1;
+    string collection = 2;
+    string replication = 3;
+    string ttl = 4;
+    string source_data_node = 5;
+    string disk_type = 6;
+}
+
+message VolumeCopyResponse {
+    uint64 processed_bytes = 1;
+    float process_percent = 2;
+    string last_append_at_ns = 3;
+}
+
+message VolumeMarkReadonlyRequest {
+    uint32 volume_id = 1;
+    bool is_readonly = 2;
+}
+
+message VolumeMarkReadonlyResponse {
+    string error = 1;
+}
+
+message VolumeStatusRequest {
+    uint32 volume_id = 1;
+}
+
+message VolumeStatusResponse {
+    bool is_readonly = 1;
+    uint64 volume_size = 2;
+    string error = 3;
+}
+
+message VolumeCompactRequest {
+    uint32 volume_id = 1;
+    float garbage_threshold = 2;
+}
+
+message VolumeCompactResponse {
+    string error = 1;
+}
+
+message VolumeCommitCompactRequest {
+    uint32 volume_id = 1;
+}
+
+message VolumeCommitCompactResponse {
+    string error = 1;
+}
+
+message ReadAllNeedlesRequest {
+    uint32 volume_id = 1;
+}
+
+message ReadAllNeedlesResponse {
+    uint64 needle_id = 1;
+    uint32 cookie = 2;
+    uint64 offset = 3;
+    uint32 size = 4;
+    bytes data = 5;
+    string mime = 6;
+    string file_name = 7;
+    bool is_deleted = 8;
+}

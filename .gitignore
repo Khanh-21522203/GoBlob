@@ -1,2 +1,19 @@
-# /docs
-# /plans
+# Go binaries
+blob
+*.exe
+
+# Generated protobuf
+**/*.pb.go
+**/*_grpc.pb.go
+
+# Dependencies
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Test artifacts
+*.test
+coverage.out

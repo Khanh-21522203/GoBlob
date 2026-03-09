@@ -1,0 +1,244 @@
+syntax = "proto3";
+package filer_pb;
+option go_package = "goblob/pb/filer_pb";
+
+service FilerService {
+    rpc LookupDirectoryEntry(LookupDirectoryEntryRequest) returns (LookupDirectoryEntryResponse) {}
+    rpc ListEntries(ListEntriesRequest) returns (stream ListEntriesResponse) {}
+    rpc CreateEntry(CreateEntryRequest) returns (CreateEntryResponse) {}
+    rpc UpdateEntry(UpdateEntryRequest) returns (UpdateEntryResponse) {}
+    rpc AppendToEntry(AppendToEntryRequest) returns (AppendToEntryResponse) {}
+    rpc DeleteEntry(DeleteEntryRequest) returns (DeleteEntryResponse) {}
+    rpc AtomicRenameEntry(AtomicRenameEntryRequest) returns (AtomicRenameEntryResponse) {}
+    rpc StreamRenameEntry(StreamRenameEntryRequest) returns (stream StreamRenameEntryResponse) {}
+
+    rpc AssignVolume(AssignVolumeRequest) returns (AssignVolumeResponse) {}
+    rpc LookupVolume(LookupVolumeRequest) returns (LookupVolumeResponse) {}
+
+    rpc SubscribeMetadata(SubscribeMetadataRequest) returns (stream SubscribeMetadataResponse) {}
+    rpc SubscribeLocalMetadata(SubscribeMetadataRequest) returns (stream SubscribeMetadataResponse) {}
+
+    rpc KvGet(KvGetRequest) returns (KvGetResponse) {}
+    rpc KvPut(KvPutRequest) returns (KvPutResponse) {}
+    rpc KvDelete(KvDeleteRequest) returns (KvDeleteResponse) {}
+
+    rpc GetFilerConfiguration(GetFilerConfigurationRequest) returns (GetFilerConfigurationResponse) {}
+
+    // Distributed lock
+    rpc DistributedLock(DistributedLockRequest) returns (DistributedLockResponse) {}
+    rpc DistributedUnlock(DistributedUnlockRequest) returns (DistributedUnlockResponse) {}
+}
+
+// Entry is the core filer metadata type representing a file or directory.
+message Entry {
+    string name = 1;
+    bool is_directory = 2;
+    repeated FileChunk chunks = 3;
+    FuseAttributes attributes = 4;
+    map<string, bytes> extended = 5;
+    bytes content = 6;
+    bytes hard_link_id = 7;
+    int32 hard_link_counter = 8;
+    RemoteEntry remote = 9;
+}
+
+message FileChunk {
+    string file_id = 1;
+    int64 offset = 2;
+    uint64 size = 3;
+    int64 modified_ts_ns = 4;
+    string e_tag = 5;
+    bytes cipher_key = 6;
+    bool is_compressed = 7;
+    bool is_chunk_manifest = 8;
+    string fid = 9;
+}
+
+message FuseAttributes {
+    uint64 file_size = 1;
+    int64 mtime = 2;
+    uint32 file_mode = 3;
+    uint32 uid = 4;
+    uint32 gid = 5;
+    int64 crtime = 6;
+    string mime = 7;
+    string replication = 8;
+    string collection = 9;
+    int32 ttl_sec = 10;
+    string user_name = 11;
+    repeated string group_names = 12;
+    string symlink_target = 13;
+    string md5 = 14;
+    string disk_type = 15;
+    bool is_remote = 16;
+    uint64 inode = 17;
+}
+
+message RemoteEntry {
+    string storage_name = 1;
+    string remote_path = 2;
+    int64 remote_size = 3;
+    string remote_e_tag = 4;
+    int64 last_local_sync_ts_ns = 5;
+}
+
+message LookupDirectoryEntryRequest { string directory = 1; string name = 2; }
+message LookupDirectoryEntryResponse { Entry entry = 1; string error = 2; }
+
+message ListEntriesRequest {
+    string directory = 1;
+    string prefix = 2;
+    string start_from_file_name = 3;
+    bool inclusive_start_from = 4;
+    uint32 limit = 5;
+}
+message ListEntriesResponse { Entry entry = 1; }
+
+message CreateEntryRequest {
+    string directory = 1;
+    Entry entry = 2;
+    bool o_excl = 3;
+    bool is_from_other_cluster = 4;
+    repeated string signatures = 5;
+    bool skip_check_parent_dir = 6;
+}
+message CreateEntryResponse { string error = 1; }
+
+message UpdateEntryRequest {
+    string directory = 1;
+    Entry entry = 2;
+    bool is_from_other_cluster = 3;
+    repeated string signatures = 4;
+}
+message UpdateEntryResponse { string error = 1; }
+
+message AppendToEntryRequest {
+    string directory = 1;
+    string entry_name = 2;
+    repeated FileChunk chunks = 3;
+}
+message AppendToEntryResponse { string error = 1; }
+
+message DeleteEntryRequest {
+    string directory = 1;
+    string name = 2;
+    bool is_delete_data = 3;
+    bool is_recursive = 4;
+    bool ignore_recursive_error = 5;
+    bool is_from_other_cluster = 6;
+    repeated string signatures = 7;
+    repeated FileChunk chunks = 8;
+}
+message DeleteEntryResponse { string error = 1; }
+
+message AtomicRenameEntryRequest {
+    string old_directory = 1;
+    string old_name = 2;
+    string new_directory = 3;
+    string new_name = 4;
+}
+message AtomicRenameEntryResponse { string error = 1; }
+
+message StreamRenameEntryRequest {
+    string old_directory = 1;
+    string old_name = 2;
+    string new_directory = 3;
+    string new_name = 4;
+    repeated string signatures = 5;
+}
+message StreamRenameEntryResponse {
+    Entry entry = 1;
+    string event_notification = 2;
+    string new_parent_path = 3;
+}
+
+message AssignVolumeRequest {
+    uint32 count = 1;
+    string collection = 2;
+    string replication = 3;
+    string ttl = 4;
+    string disk_type = 5;
+    string data_center = 6;
+    string rack = 7;
+    int32 replication_as_min = 8;
+}
+message AssignVolumeResponse {
+    string file_id = 1;
+    string url = 2;
+    string public_url = 3;
+    int32 count = 4;
+    string auth = 5;
+    string collection = 6;
+    string replication = 7;
+    string ttl = 8;
+    string disk_type = 9;
+    string error = 10;
+}
+
+message LookupVolumeRequest { repeated string volume_ids = 1; }
+message LookupVolumeResponse { map<string, Locations> locations_map = 1; }
+message Locations { repeated Location locations = 1; string error = 2; }
+message Location { string url = 1; string public_url = 2; string data_center = 3; }
+
+message SubscribeMetadataRequest {
+    string path_prefix = 1;
+    int64 since_ns = 2;
+    int32 client_id = 3;
+    string client_name = 4;
+    repeated string watched_events = 5;
+}
+
+message SubscribeMetadataResponse {
+    string directory = 1;
+    EventNotification event_notification = 2;
+    int64 ts_ns = 3;
+}
+
+message EventNotification {
+    Entry old_entry = 1;
+    Entry new_entry = 2;
+    bool delete_chunks = 3;
+    string new_parent_path = 4;
+    bool is_from_other_cluster = 5;
+    repeated string signatures = 6;
+    bool is_truncate = 7;
+}
+
+message KvGetRequest { bytes key = 1; }
+message KvGetResponse { bytes value = 1; string error = 2; }
+message KvPutRequest { bytes key = 1; bytes value = 2; }
+message KvPutResponse { string error = 1; }
+message KvDeleteRequest { bytes key = 1; }
+message KvDeleteResponse { string error = 1; }
+
+message GetFilerConfigurationRequest {}
+message GetFilerConfigurationResponse {
+    string masters = 1;
+    string replication = 2;
+    string collection = 3;
+    uint32 max_mb = 4;
+    string dir_buckets = 5;
+    bool cipher = 6;
+    repeated string signatures = 7;
+    string metrics_address = 8;
+    string filer_group = 9;
+    string data_center = 10;
+    string rack = 11;
+}
+
+message DistributedLockRequest {
+    string name = 1;
+    int64 expire_ns = 2;
+    string renew_token = 3;
+    string owner = 4;
+}
+message DistributedLockResponse {
+    string renew_token = 1;
+    string error = 2;
+}
+
+message DistributedUnlockRequest {
+    string name = 1;
+    string renew_token = 2;
+}
+message DistributedUnlockResponse { string error = 1; }

@@ -2,7 +2,32 @@
   "permissions": {
     "allow": [
       "Bash(findstr:*)",
-      "Bash(grep -c \"^**Critical Details**$\" /home/khanh.dao/Projects/SideProjects/GoBlob/implementation_roadmap.md | head -20)"
+      "Bash(grep -c \"^**Critical Details**$\" /home/khanh.dao/Projects/SideProjects/GoBlob/implementation_roadmap.md | head -20)",
+      "Bash(ls -la /home/khanh.dao/Projects/SideProjects/GoBlob/implementation_roadmap*)",
+      "Bash(go get google.golang.org/grpc@latest && go get google.golang.org/protobuf@latest && go get github.com/spf13/viper@latest && go get github.com/gorilla/mux@latest && go get go.uber.org/zap@latest && go get github.com/prometheus/client_golang@latest && go get github.com/hashicorp/raft@latest && go get github.com/boltdb/bolt@latest && go get github.com/syndtr/goleveldb@latest && go mod tidy)",
+      "Bash(go build ./...)",
+      "Bash(go build -o blob ./goblob/)",
+      "Bash(go test ./...)",
+      "Bash(which golangci-lint && golangci-lint run ./goblob/... || echo \"golangci-lint not installed - install with: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest\")",
+      "Bash(go test ./goblob/core/types/... -v)",
+      "Bash(which protoc && protoc --version || echo \"protoc not found\")",
+      "Bash(go install google.golang.org/protobuf/cmd/protoc-gen-go@latest && go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest)",
+      "Bash(make proto)",
+      "Bash(make clean && make proto)",
+      "Bash(go build ./goblob/pb/...)",
+      "Bash(go mod tidy)",
+      "Bash(go test ./goblob/util/... -v -race)",
+      "Bash(go test ./goblob/grace/... -v)",
+      "Bash(go test ./goblob/observability/... ./goblob/stats/... -v)",
+      "Bash(go get github.com/golang-jwt/jwt/v5)",
+      "Bash(go test ./goblob/security/... -v -race)",
+      "Bash(go test ./goblob/config/... -v)",
+      "Bash(go get github.com/spf13/viper && go mod tidy)",
+      "Bash(go test ./goblob/...)",
+      "Bash(go test ./goblob/... -race)",
+      "Bash(go build ./goblob/...)",
+      "Bash(make lint 2>&1 || echo \"Lint not available or failed\")",
+      "Bash(go vet ./goblob/...)"
     ]
   }
 }

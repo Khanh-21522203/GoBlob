@@ -1,0 +1,34 @@
+syntax = "proto3";
+package iam_pb;
+option go_package = "goblob/pb/iam_pb";
+
+// IAMService is co-hosted on the filer gRPC port.
+service IAMService {
+    rpc GetS3ApiConfiguration(GetS3ApiConfigurationRequest) returns (GetS3ApiConfigurationResponse) {}
+    rpc PutS3ApiConfiguration(PutS3ApiConfigurationRequest) returns (PutS3ApiConfigurationResponse) {}
+    rpc GetS3ApiConfigurations(GetS3ApiConfigurationsRequest) returns (stream GetS3ApiConfigurationsResponse) {}
+}
+
+message GetS3ApiConfigurationRequest {}
+message GetS3ApiConfigurationResponse { S3ApiConfiguration s3_api_configuration = 1; }
+
+message PutS3ApiConfigurationRequest { S3ApiConfiguration s3_api_configuration = 1; }
+message PutS3ApiConfigurationResponse { string error = 1; }
+
+message GetS3ApiConfigurationsRequest {}
+message GetS3ApiConfigurationsResponse { S3ApiConfiguration s3_api_configuration = 1; }
+
+message S3ApiConfiguration {
+    repeated Identity identities = 1;
+}
+
+message Identity {
+    string name = 1;
+    repeated Credential credentials = 2;
+    repeated string actions = 3;
+}
+
+message Credential {
+    string access_key = 1;
+    string secret_key = 2;
+}

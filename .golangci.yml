@@ -1,0 +1,15 @@
+linters:
+  enable:
+    - vet
+    - staticcheck
+    - errcheck
+    - gocritic
+    - ineffassign
+    - unused
+linters-settings:
+  errcheck:
+    check-blank: true
+issues:
+  exclude-rules:
+    - path: ".*\\.pb\\.go"
+      linters: [all]
