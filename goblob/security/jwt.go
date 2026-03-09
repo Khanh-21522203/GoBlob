@@ -31,12 +31,12 @@ func VerifyJWT(tokenString, key string) (jwt.MapClaims, error) {
 	}
 
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-		// Validate signing method
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+		// Validate signing method - only allow HS256
+		if method, ok := token.Method.(*jwt.SigningMethodHMAC); !ok || method != jwt.SigningMethodHS256 {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
 		return []byte(key), nil
-	})
+	}, jwt.WithValidMethods([]string{"HS256"}))
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse token: %w", err)

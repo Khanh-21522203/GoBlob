@@ -6,6 +6,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 )
 
@@ -50,11 +51,13 @@ func GRPCUnaryInterceptor(guard *Guard) grpc.UnaryServerInterceptor {
 		info *grpc.UnaryServerInfo,
 		handler grpc.UnaryHandler,
 	) (interface{}, error) {
-		// Extract peer info from context
-		if p, ok := ctx.Value(peerKey{}).(string); ok {
-			if !guard.isIPAllowed(p) {
-				return nil, status.Errorf(codes.PermissionDenied, "IP not allowed")
-			}
+		// Extract peer info from context using grpc/peer package
+		var clientIP string
+		if p, ok := peer.FromContext(ctx); ok {
+			clientIP = p.Addr.String()
+		}
+		if clientIP != "" && !guard.isIPAllowed(clientIP) {
+			return nil, status.Errorf(codes.PermissionDenied, "IP not allowed")
 		}
 
 		// Check JWT if configured
@@ -75,12 +78,14 @@ func GRPCStreamInterceptor(guard *Guard) grpc.StreamServerInterceptor {
 		info *grpc.StreamServerInfo,
 		handler grpc.StreamHandler,
 	) error {
-		// Extract peer info from context
+		// Extract peer info from context using grpc/peer package
 		ctx := ss.Context()
-		if p, ok := ctx.Value(peerKey{}).(string); ok {
-			if !guard.isIPAllowed(p) {
-				return status.Errorf(codes.PermissionDenied, "IP not allowed")
-			}
+		var clientIP string
+		if p, ok := peer.FromContext(ctx); ok {
+			clientIP = p.Addr.String()
+		}
+		if clientIP != "" && !guard.isIPAllowed(clientIP) {
+			return status.Errorf(codes.PermissionDenied, "IP not allowed")
 		}
 
 		return handler(srv, ss)

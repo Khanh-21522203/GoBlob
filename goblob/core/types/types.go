@@ -21,6 +21,7 @@ const (
 	NeedleAlignmentSize uint64 = 8
 	TombstoneFileSize   Size   = 0
 	NeedleIndexSize            = 16 // NeedleId(8)+Offset(4)+Size(4)
+	MaxVolumeSize       uint64 = 8 * 1024 * 1024 * 1024 // 8GB max volume size
 )
 
 const (

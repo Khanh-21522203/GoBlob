@@ -66,10 +66,17 @@ func runHooks() {
 // Hooks only run once; subsequent calls are no-ops.
 func NotifyExit() {
 	mu.Lock()
-	alreadyNotified := notified
+	if notified {
+		mu.Unlock()
+		return
+	}
+	notified = true
+	hooksCopy := make([]func(), len(hooks))
+	copy(hooksCopy, hooks)
 	mu.Unlock()
 
-	if !alreadyNotified {
-		runHooks()
+	// Run hooks outside the lock (in LIFO order)
+	for i := len(hooksCopy) - 1; i >= 0; i-- {
+		hooksCopy[i]()
 	}
 }
