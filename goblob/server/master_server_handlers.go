@@ -279,17 +279,17 @@ func (ms *MasterServer) handleVacuum(w http.ResponseWriter, r *http.Request) {
 // handleHealthz handles GET /cluster/healthz requests.
 func (ms *MasterServer) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("OK"))
+	_, _ = w.Write([]byte("OK"))
 }
 
 func (ms *MasterServer) handleReady(w http.ResponseWriter, r *http.Request) {
 	if ms == nil || ms.Topo == nil || ms.Raft == nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write([]byte("NOT READY"))
+		_, _ = w.Write([]byte("NOT READY"))
 		return
 	}
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("READY"))
+	_, _ = w.Write([]byte("READY"))
 }
 
 // proxyToLeader proxies the request to the Raft leader.

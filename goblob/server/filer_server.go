@@ -202,7 +202,7 @@ func (fs *FilerServer) handleFileUpload(w http.ResponseWriter, r *http.Request) 
 	// For Phase 4, only support inline storage (<64KB)
 	if r.ContentLength > 64*1024 {
 		w.WriteHeader(http.StatusNotImplemented)
-		json.NewEncoder(w).Encode(map[string]string{"error": "chunked files not supported yet"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "chunked files not supported yet"})
 		return
 	}
 
@@ -210,7 +210,7 @@ func (fs *FilerServer) handleFileUpload(w http.ResponseWriter, r *http.Request) 
 	data, err := io.ReadAll(r.Body)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	defer r.Body.Close()
@@ -231,7 +231,7 @@ func (fs *FilerServer) handleFileUpload(w http.ResponseWriter, r *http.Request) 
 	err = fs.filer.CreateEntry(fs.ctx, entry)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 
@@ -284,7 +284,7 @@ func (fs *FilerServer) handleFileDownload(w http.ResponseWriter, r *http.Request
 		}
 		w.Header().Set("Content-Length", strconv.FormatInt(int64(len(entry.Content)), 10))
 		w.Header().Set("Last-Modified", entry.Attr.Mtime.UTC().Format(http.TimeFormat))
-		w.Write(entry.Content)
+		_, _ = w.Write(entry.Content)
 		return
 	}
 

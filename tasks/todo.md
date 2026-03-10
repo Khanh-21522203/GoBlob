@@ -278,6 +278,30 @@
   - `docs/advanced/lifecycle-policies.md`
   - `docs/interfaces/webdav.md`
 
+## CI Govulncheck Module Scan Fix Plan
+
+- [x] Confirm failing command location and root cause in workflow config
+- [x] Update workflow to use valid `govulncheck -scan module` invocation
+- [x] Verify command behavior locally and record result
+
+### CI Govulncheck Module Scan Fix Review
+
+- Root cause: workflow used `govulncheck -scan module ./...`; module scan mode rejects package patterns.
+- Fix applied in `.github/workflows/security.yml`: `govulncheck -C goblob -scan module`.
+- Verification:
+  - `PATH=/tmp/go-bin:$PATH govulncheck -C goblob -scan module`
+  - Command now executes successfully past argument validation and package loading; it exits with vulnerability findings (exit code `3`) instead of usage error (exit code `2`).
+
+## CI Govulncheck Vulnerability Remediation Plan
+
+- [ ] Upgrade vulnerable module dependency `filippo.io/edwards25519` to fixed version
+- [ ] Pin security workflow vulncheck job to patched Go toolchain version
+- [ ] Re-run local module scan checks and record outcomes
+
+### CI Govulncheck Vulnerability Remediation Review
+
+- Pending
+
 - Verification executed:
   - `go test ./goblob/...`
   - `go test ./...`

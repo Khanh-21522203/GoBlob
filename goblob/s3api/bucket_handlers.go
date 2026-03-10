@@ -130,7 +130,7 @@ func (s *S3ApiServer) handleDeleteObjects(w http.ResponseWriter, r *http.Request
 			continue
 		}
 		_ = s.filerClient.DeleteObject(r.Context(), bucket, obj.Key)
-		deleted = append(deleted, deletedEntry{Key: obj.Key})
+		deleted = append(deleted, deletedEntry(obj))
 	}
 	writeXML(w, http.StatusOK, deleteObjectsResult{Xmlns: s3XMLNS, Deleted: deleted})
 }
