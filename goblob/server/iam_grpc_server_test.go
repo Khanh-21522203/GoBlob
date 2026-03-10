@@ -106,11 +106,9 @@ func dialBufConn(t *testing.T, grpcServer *grpc.Server) *grpc.ClientConn {
 		return lis.Dial()
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	conn, err := grpc.DialContext(ctx, "bufnet", grpc.WithContextDialer(dialer), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient("bufnet", grpc.WithContextDialer(dialer), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		t.Fatalf("grpc.DialContext: %v", err)
+		t.Fatalf("grpc.NewClient: %v", err)
 	}
 	return conn
 }

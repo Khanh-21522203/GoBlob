@@ -57,10 +57,10 @@ func TestDefaultGrowthStrategy(t *testing.T) {
 			totalVolumes  int
 			expectedCount int
 		}{
-			{0, 1},   // Minimum 1
-			{10, 1},  // 10% of 10 = 1
+			{0, 1},    // Minimum 1
+			{10, 1},   // 10% of 10 = 1
 			{100, 10}, // 10% of 100 = 10
-			{5, 1},   // 10% of 5 = 0.5 → min 1
+			{5, 1},    // 10% of 5 = 0.5 → min 1
 		}
 
 		for _, tt := range tests {
@@ -125,9 +125,9 @@ func TestVolumeGrowth(t *testing.T) {
 		vg := NewVolumeGrowth(topo)
 
 		hb := &master_pb.Heartbeat{
-			Ip:       "127.0.0.1",
-			Port:     8080,
-			GrpcPort: 18080,
+			Ip:         "127.0.0.1",
+			Port:       8080,
+			GrpcPort:   18080,
 			DataCenter: "dc1",
 			Rack:       "rack1",
 			Volumes:    []*master_pb.VolumeInformationMessage{},
@@ -141,7 +141,7 @@ func TestVolumeGrowth(t *testing.T) {
 
 		reservation := vg.reserveCapacity(dn, types.HardDriveType)
 		if reservation == nil {
-			t.Error("expected successful reservation")
+			t.Fatal("expected successful reservation")
 		}
 		if reservation.DataNode != dn {
 			t.Error("reservation data node mismatch")

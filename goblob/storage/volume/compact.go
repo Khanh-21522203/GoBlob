@@ -2,7 +2,6 @@ package volume
 
 import (
 	"fmt"
-	"io"
 	"os"
 
 	"GoBlob/goblob/core/types"
@@ -215,31 +214,4 @@ func CompactVolume(v *Volume, threshold float64) (*CompactionResult, error) {
 		return nil, err
 	}
 	return result, nil
-}
-
-// readNeedleAt is kept for backward compatibility with any callers.
-func readNeedleAt(f *os.File, offset int64, version types.NeedleVersion) (*needle.Needle, types.Size, error) {
-	header := make([]byte, 16)
-	if _, err := f.ReadAt(header, offset); err != nil {
-		if err == io.EOF {
-			return nil, 0, io.EOF
-		}
-		return nil, 0, err
-	}
-
-	bodySize := uint32(header[12])<<24 | uint32(header[13])<<16 | uint32(header[14])<<8 | uint32(header[15])
-	unpaddedSize := int64(16 + bodySize)
-	padding := needle.NeedleAlignPadding(int(unpaddedSize))
-	totalSize := types.Size(int(unpaddedSize) + padding)
-
-	data := make([]byte, totalSize)
-	if _, err := f.ReadAt(data, offset); err != nil && err != io.EOF {
-		return nil, 0, err
-	}
-
-	n := &needle.Needle{}
-	if err := n.ReadFrom(data[:unpaddedSize], offset, totalSize, version); err != nil {
-		return nil, 0, err
-	}
-	return n, totalSize, nil
 }

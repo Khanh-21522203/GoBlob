@@ -71,7 +71,8 @@ func (s *SnowflakeSequencer) NextFileId(count uint64) uint64 {
 
 	now := s.currentTime()
 
-	if now == s.lastTime {
+	switch {
+	case now == s.lastTime:
 		s.sequence++
 		if s.sequence > s.maxSequence {
 			// Sequence overflow — spin until the next millisecond.
@@ -81,15 +82,16 @@ func (s *SnowflakeSequencer) NextFileId(count uint64) uint64 {
 			}
 			s.sequence = 0
 		}
-	} else if now > s.lastTime {
+	case now > s.lastTime:
 		s.sequence = 0
 		s.lastTime = now
-	} else {
+	default:
 		// Clock moved backward — wait to catch up.
 		for now < s.lastTime {
 			time.Sleep(100 * time.Microsecond)
 			now = s.currentTime()
 		}
+		// now >= s.lastTime here; update state
 		s.sequence = 0
 		s.lastTime = now
 	}

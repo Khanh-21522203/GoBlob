@@ -21,24 +21,24 @@ type MaxFileIdCommand struct {
 	MaxFileId uint64 `json:"max_file_id"`
 }
 
-func (c MaxFileIdCommand) Type() string             { return "max_file_id" }
-func (c MaxFileIdCommand) Encode() ([]byte, error)  { return json.Marshal(c) }
+func (c MaxFileIdCommand) Type() string            { return "max_file_id" }
+func (c MaxFileIdCommand) Encode() ([]byte, error) { return json.Marshal(c) }
 
 // MaxVolumeIdCommand records the highest VolumeId ever allocated.
 type MaxVolumeIdCommand struct {
 	MaxVolumeId uint32 `json:"max_volume_id"`
 }
 
-func (c MaxVolumeIdCommand) Type() string             { return "max_volume_id" }
-func (c MaxVolumeIdCommand) Encode() ([]byte, error)  { return json.Marshal(c) }
+func (c MaxVolumeIdCommand) Type() string            { return "max_volume_id" }
+func (c MaxVolumeIdCommand) Encode() ([]byte, error) { return json.Marshal(c) }
 
 // TopologyIdCommand sets the cluster's unique identity (UUID).
 type TopologyIdCommand struct {
 	TopologyId string `json:"topology_id"`
 }
 
-func (c TopologyIdCommand) Type() string             { return "topology_id" }
-func (c TopologyIdCommand) Encode() ([]byte, error)  { return json.Marshal(c) }
+func (c TopologyIdCommand) Type() string            { return "topology_id" }
+func (c TopologyIdCommand) Encode() ([]byte, error) { return json.Marshal(c) }
 
 // LogEntry wraps a command with type info for the FSM.
 type LogEntry struct {
@@ -212,7 +212,7 @@ type masterFSMSnapshot struct {
 // Persist writes the snapshot to the sink.
 func (s *masterFSMSnapshot) Persist(sink raft.SnapshotSink) error {
 	if _, err := sink.Write(s.data); err != nil {
-		sink.Cancel()
+		_ = sink.Cancel()
 		return fmt.Errorf("failed to write snapshot: %w", err)
 	}
 	return sink.Close()

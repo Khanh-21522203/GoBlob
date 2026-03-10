@@ -83,29 +83,11 @@ func (e *CommandEnv) filerGRPCAddress() string {
 	return string(types.ServerAddress(addr).ToGrpcAddress())
 }
 
-func (e *CommandEnv) filerHTTPAddress() string {
-	if e == nil || e.option == nil {
-		return ""
-	}
-	addr := strings.TrimSpace(e.option.FilerAddress)
-	if addr == "" {
-		return ""
-	}
-	return string(types.ServerAddress(addr).ToHttpAddress())
-}
-
 func (e *CommandEnv) currentDirectory() string {
 	if e == nil || e.option == nil {
 		return "/"
 	}
 	return e.option.Directory
-}
-
-func (e *CommandEnv) setCurrentDirectory(dir string) {
-	if e == nil || e.option == nil {
-		return
-	}
-	e.option.Directory = normalizePath(dir)
 }
 
 func normalizePath(p string) string {

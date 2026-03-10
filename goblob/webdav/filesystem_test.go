@@ -157,7 +157,7 @@ func clonePB(entry *filer_pb.Entry) *filer_pb.Entry {
 	if entry == nil {
 		return nil
 	}
-	cp := *entry
+	cp := *entry //nolint:govet
 	cp.Content = append([]byte(nil), entry.GetContent()...)
 	return &cp
 }

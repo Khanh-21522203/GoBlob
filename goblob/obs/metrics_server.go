@@ -3,7 +3,6 @@ package obs
 import (
 	"context"
 	"expvar"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/pprof"
@@ -70,8 +69,4 @@ func registerPprofHandlers(mux *http.ServeMux) {
 	mux.Handle("/debug/pprof/block", pprof.Handler("block"))
 	mux.Handle("/debug/pprof/mutex", pprof.Handler("mutex"))
 	mux.Handle("/debug/pprof/allocs", pprof.Handler("allocs"))
-}
-
-func ensureMetricsAddr(host string, port int) string {
-	return fmt.Sprintf("%s:%d", host, port)
 }

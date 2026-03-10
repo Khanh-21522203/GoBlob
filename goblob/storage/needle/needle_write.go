@@ -19,10 +19,6 @@ func (n *Needle) WriteTo(w io.Writer, version types.NeedleVersion) (int64, error
 	n.Checksum = checksum
 
 	// Step 3: Build footer
-	footerSize := 4 // Checksum
-	if version >= types.NeedleVersionV3 {
-		footerSize += 8 // AppendAtNs
-	}
 	footer := n.buildFooterBytes(version)
 
 	// Step 4: BodySize = len(body) + len(footer)
@@ -138,7 +134,6 @@ func (n *Needle) buildBodyBytes() []byte {
 	if n.HasTtl() {
 		ttlBytes := n.Ttl.Bytes()
 		copy(body[offset:offset+2], ttlBytes[:])
-		offset += 2
 	}
 
 	return body

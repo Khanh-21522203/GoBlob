@@ -217,7 +217,7 @@ func (t *Topology) GetDataCenter(id string) *DataCenter {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
-	child, _ := t.GetChildren()[id]
+	child := t.GetChildren()[id]
 	if child == nil {
 		return nil
 	}

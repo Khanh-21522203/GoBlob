@@ -1,7 +1,6 @@
 package server
 
 import (
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -75,21 +74,21 @@ func TestHandleDelete(t *testing.T) {
 func TestParseFileID(t *testing.T) {
 	tests := []struct {
 		name    string
-		fidStr   string
-		wantVid  types.VolumeId
-		wantNid  types.NeedleId
-		wantErr  bool
+		fidStr  string
+		wantVid types.VolumeId
+		wantNid types.NeedleId
+		wantErr bool
 	}{
 		{
-			name:   "valid file ID",
-			fidStr: "3,00000000000000010000000123",
+			name:    "valid file ID",
+			fidStr:  "3,00000000000000010000000123",
 			wantVid: 3,
 			wantNid: 0x100,
 			wantErr: false,
 		},
 		{
-			name:   "invalid file ID - no comma",
-			fidStr: "invalid",
+			name:    "invalid file ID - no comma",
+			fidStr:  "invalid",
 			wantErr: true,
 		},
 	}
@@ -143,15 +142,4 @@ func TestVolumeServerLifecycle(t *testing.T) {
 	default:
 		t.Error("context should be done after shutdown")
 	}
-}
-
-// mockReadCloser is a mock io.ReadCloser for testing.
-type mockReadCloser struct {
-	*io.LimitedReader
-	closed bool
-}
-
-func (m *mockReadCloser) Close() error {
-	m.closed = true
-	return nil
 }

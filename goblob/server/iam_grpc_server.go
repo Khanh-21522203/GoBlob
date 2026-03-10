@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"fmt"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -70,7 +69,7 @@ func (s *IAMGRPCServer) newIAMManager() (*s3iam.IdentityAccessManagement, error)
 		return nil, status.Errorf(codes.Internal, "initialize IAM manager: %v", err)
 	}
 	if iamMgr == nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("%s", "IAM manager is nil"))
+		return nil, status.Error(codes.Internal, "IAM manager is nil")
 	}
 	return iamMgr, nil
 }

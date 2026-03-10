@@ -108,7 +108,7 @@ func (vg *VolumeGrowth) CheckAndGrow(ctx context.Context, collection string, rep
 			if err := vg.allocateVolumeOnNode(ctx, node, volumeId, collection, replicaPlacement, ttl, reservations[j].DiskType); err != nil {
 				// Rollback: deallocate volumes from previous nodes
 				for k := 0; k < j; k++ {
-					vg.deallocateVolumeOnNode(ctx, selectedNodes[k], volumeId)
+					_ = vg.deallocateVolumeOnNode(ctx, selectedNodes[k], volumeId)
 				}
 				for _, res := range reservations {
 					vg.releaseReservation(res)

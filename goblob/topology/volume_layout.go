@@ -22,7 +22,6 @@ type VolumeLayout struct {
 	writableVolumes *util.ConcurrentReadMap[uint32, []*VolumeLocation]
 	readonlyVolumes *util.ConcurrentReadMap[uint32, []*VolumeLocation]
 	crowdedVolumes  *util.ConcurrentReadMap[uint32, []*VolumeLocation]
-	mu              sync.RWMutex
 }
 
 // VolumeGrowOption is used by PickForWrite to select a writable volume.
@@ -296,14 +295,10 @@ func sameDataNode(loc *VolumeLocation, nodeID string, node *DataNode) bool {
 
 // VolumeLocation represents one server hosting a volume replica.
 type VolumeLocation struct {
-	DataNode    *DataNode
-	VolumeId    uint32
-	collection  string
-	replication string
-	ttl         string
-	diskType    types.DiskType
-	size        uint64
-	isReadOnly  bool
+	DataNode   *DataNode
+	VolumeId   uint32
+	size       uint64
+	isReadOnly bool
 }
 
 // NewVolumeLocation creates a new VolumeLocation.

@@ -154,10 +154,7 @@ func overrideWithVolumeClientFromServer(t *testing.T, source *VolumeGRPCServer) 
 
 	old := withVolumeServerClient
 	withVolumeServerClient = func(_ string, _ grpc.DialOption, fn func(volume_server_pb.VolumeServerClient) error) error {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		conn, err := grpc.DialContext(
-			ctx,
+		conn, err := grpc.NewClient(
 			"bufnet",
 			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return lis.Dial() }),
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -196,7 +193,7 @@ func (s *collectVolumeCopyStream) Send(resp *volume_server_pb.VolumeCopyResponse
 	if resp == nil {
 		return nil
 	}
-	copied := *resp
+	copied := *resp //nolint:govet
 	s.responses = append(s.responses, &copied)
 	return nil
 }
@@ -221,7 +218,7 @@ func (s *collectReadNeedlesStream) Send(resp *volume_server_pb.ReadAllNeedlesRes
 	if resp == nil {
 		return nil
 	}
-	copied := *resp
+	copied := *resp //nolint:govet
 	copied.Data = append([]byte(nil), resp.GetData()...)
 	s.responses = append(s.responses, &copied)
 	return nil

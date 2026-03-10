@@ -186,15 +186,13 @@ func (dn *DataNode) AddOrUpdateVolume(volInfo *master_pb.VolumeInformationMessag
 			newDisk := dn.getOrCreateDiskUnsafe(newDiskType)
 			newDisk.AddVolume(volInfo.Id)
 		}
-		copied := *volInfo
-		dn.volumes[volInfo.Id] = &copied
+		dn.volumes[volInfo.Id] = volInfo
 		return
 	}
 
 	newDisk := dn.getOrCreateDiskUnsafe(newDiskType)
 	newDisk.AddVolume(volInfo.Id)
-	copied := *volInfo
-	dn.volumes[volInfo.Id] = &copied
+	dn.volumes[volInfo.Id] = volInfo
 }
 
 // DeleteVolume removes a volume from this data node.

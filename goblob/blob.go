@@ -15,7 +15,6 @@ func main() {
 
 	sighup := make(chan os.Signal, 1)
 	signal.Notify(sighup, syscall.SIGHUP)
-	defer signal.Stop(sighup)
 
 	go func() {
 		for range sighup {
@@ -24,5 +23,6 @@ func main() {
 	}()
 
 	exitCode := command.Execute(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
+	signal.Stop(sighup)
 	os.Exit(exitCode)
 }

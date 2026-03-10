@@ -32,7 +32,7 @@ func NewViperLoader(cliFlags map[string]interface{}) Loader {
 
 	// Read config file (silently ignore if not found)
 	v.SetConfigType("toml")
-	v.ReadInConfig()
+	_ = v.ReadInConfig()
 
 	// Apply CLI overrides
 	for key, value := range cliFlags {
@@ -64,7 +64,7 @@ func (l *ViperLoader) LoadMasterConfig() (*MasterConfig, error) {
 	v.SetConfigName("master")
 
 	// Try to read the config file; ignore errors if not found
-	v.ReadInConfig()
+	_ = v.ReadInConfig()
 
 	// Set master-specific defaults
 	v.SetDefault("port", DefaultMasterHTTPPort)
@@ -97,7 +97,7 @@ func (l *ViperLoader) LoadVolumeConfig() (*VolumeServerConfig, error) {
 	v.SetConfigName("volume")
 
 	// Try to read the config file; ignore errors if not found
-	v.ReadInConfig()
+	_ = v.ReadInConfig()
 
 	// Set volume-specific defaults
 	v.SetDefault("port", DefaultVolumeHTTPPort)
@@ -126,7 +126,7 @@ func (l *ViperLoader) LoadFilerConfig() (*FilerConfig, error) {
 	v.SetConfigName("filer")
 
 	// Try to read the config file; ignore errors if not found
-	v.ReadInConfig()
+	_ = v.ReadInConfig()
 
 	// Set filer-specific defaults
 	v.SetDefault("port", DefaultFilerHTTPPort)

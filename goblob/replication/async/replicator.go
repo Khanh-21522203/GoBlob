@@ -472,7 +472,7 @@ func cloneEntry(entry *filer_pb.Entry) *filer_pb.Entry {
 	if entry == nil {
 		return nil
 	}
-	out := *entry
+	out := *entry //nolint:govet
 	out.Chunks = append([]*filer_pb.FileChunk(nil), entry.GetChunks()...)
 	out.Content = append([]byte(nil), entry.GetContent()...)
 	if len(entry.GetExtended()) > 0 {

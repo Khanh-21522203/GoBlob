@@ -130,15 +130,6 @@ func fetchClusterSnapshot(env *CommandEnv) (*clusterSnapshot, error) {
 	return snap, nil
 }
 
-func sortedNodeIDs(nodes map[string]*nodeSnapshot) []string {
-	ids := make([]string, 0, len(nodes))
-	for id := range nodes {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	return ids
-}
-
 func sortedVolumeIDs(vols map[uint32]struct{}) []uint32 {
 	ids := make([]uint32, 0, len(vols))
 	for id := range vols {

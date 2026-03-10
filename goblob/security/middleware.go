@@ -60,12 +60,6 @@ func GRPCUnaryInterceptor(guard *Guard) grpc.UnaryServerInterceptor {
 			return nil, status.Errorf(codes.PermissionDenied, "IP not allowed")
 		}
 
-		// Check JWT if configured
-		if guard.HasJWTSigningKey() {
-			// JWT would be extracted from metadata in a real implementation
-			// For now, we just check if it's required
-		}
-
 		return handler(ctx, req)
 	}
 }
