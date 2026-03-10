@@ -11,6 +11,10 @@ import (
 	"strings"
 )
 
+// TODO: wire storage/tiering.Scanner here to drive policy-based automatic tiering
+// from filer entries. The Scanner is ready; it needs a tiering.Tier policy config
+// and a filer list function to be provided at startup.
+
 // VolumeTierUploadCommand uploads local tier data to remote object storage.
 type VolumeTierUploadCommand struct {
 	sourceDir string

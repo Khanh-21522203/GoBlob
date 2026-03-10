@@ -195,6 +195,10 @@ func (fs *FilerServer) handleFileUpload(w http.ResponseWriter, r *http.Request) 
 	// Get path from URL
 	path := normalizeAbsolutePath(r.URL.Path)
 
+	// TODO: wire storage/dedup.Deduplicator here once chunked volume storage is
+	// implemented. The dedup package is ready; it requires a volume fid per chunk
+	// to store hash→fid mappings. Inline content (<64KB) does not benefit from it.
+
 	// For Phase 4, only support inline storage (<64KB)
 	if r.ContentLength > 64*1024 {
 		w.WriteHeader(http.StatusNotImplemented)

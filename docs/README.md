@@ -208,7 +208,7 @@ goblob/                        # Main binary entry point (blob.go)
 
 ### Graceful Shutdown
 
-- `grace.OnInterrupt()` registers shutdown hooks for each server
+- Context cancellation propagates shutdown signals to each server
 - Volume server: stops heartbeats, waits `preStopSeconds`, then shuts down HTTP/gRPC
 - Master server: calls `ms.Shutdown()`, stops gRPC
 - Filer: calls `f.filer.Shutdown()` to flush metadata

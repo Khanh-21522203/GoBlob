@@ -127,8 +127,7 @@ runMaster() or startMaster()
     +--> Start gRPC server (master_pb.RegisterGoBlob Server)
     +--> Start HTTP server (with optional TLS)
     +--> ms.MasterClient.KeepConnectedToMaster()  (background)
-    +--> grace.OnInterrupt(ms.Shutdown)
-    +--> select{} (block forever)
+    +--> block on ctx.Done() / graceful shutdown via ms.Shutdown()
 ```
 
 ## Runtime Sequence Flow

@@ -184,7 +184,7 @@ runFiler() / startFiler()
     |
     +--> Start unix socket listener (Linux/Mac)
     +--> Start HTTP server (with optional TLS/mTLS)
-    +--> grace.OnReload / grace.OnInterrupt
+    +--> SIGHUP handler: reload security config / ctx.Done(): graceful shutdown
 ```
 
 ## Runtime Sequence Flow

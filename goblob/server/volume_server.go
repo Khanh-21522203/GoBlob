@@ -18,6 +18,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"log/slog"
 
+	"GoBlob/goblob/cache"
 	"GoBlob/goblob/config"
 	"GoBlob/goblob/core/types"
 	"GoBlob/goblob/obs"
@@ -45,6 +46,7 @@ type VolumeServer struct {
 	uploadLimitCond   *sync.Cond
 	downloadLimitCond *sync.Cond
 	isHeartbeating    atomic.Bool
+	blobCache         cache.Cache
 	stopChan          chan struct{}
 	ctx               context.Context
 	cancel            context.CancelFunc
@@ -88,6 +90,12 @@ func NewVolumeServer(adminMux, publicMux *http.ServeMux, grpcServer *grpc.Server
 	replicator := replication.NewHTTPReplicator()
 	replicaLocations := replication.NewReplicaLocations()
 
+	// Create blob cache
+	var blobCache cache.Cache
+	if opt.CacheMaxEntries > 0 {
+		blobCache = cache.NewLRUCache(int64(opt.CacheMaxEntries))
+	}
+
 	// Create limit conds
 	uploadMu := &sync.Mutex{}
 	downloadMu := &sync.Mutex{}
@@ -103,6 +111,7 @@ func NewVolumeServer(adminMux, publicMux *http.ServeMux, grpcServer *grpc.Server
 		inFlightDownload:  0,
 		uploadLimitCond:   sync.NewCond(uploadMu),
 		downloadLimitCond: sync.NewCond(downloadMu),
+		blobCache:         blobCache,
 		stopChan:          make(chan struct{}),
 		ctx:               ctx,
 		cancel:            cancel,
@@ -317,10 +326,31 @@ func (vs *VolumeServer) handleRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	cacheKey := r.URL.Path[1:]
+
+	// Cache-aside: serve from memory if available.
+	if vs.blobCache != nil {
+		if cached, err := vs.blobCache.Get(r.Context(), cacheKey); err == nil {
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(cached)))
+			w.Header().Set("ETag", fmt.Sprintf("%x", md5.Sum(cached)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(cached)
+			obs.VolumeServerNeedleReadBytes.WithLabelValues(fmt.Sprintf("%d", fid.VolumeId)).Add(float64(len(cached)))
+			obs.VolumeServerNeedleReadLatency.Observe(time.Since(start).Seconds())
+			return
+		}
+	}
+
 	n, err := vs.store.ReadVolumeNeedle(fid.VolumeId, fid)
 	if err != nil {
 		w.WriteHeader(http.StatusNotFound)
 		return
+	}
+
+	// Populate cache on read miss.
+	if vs.blobCache != nil {
+		_ = vs.blobCache.Put(r.Context(), cacheKey, n.Data)
 	}
 
 	mimeType := n.GetMime()
@@ -364,6 +394,10 @@ func (vs *VolumeServer) handleDelete(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
+	}
+
+	if vs.blobCache != nil {
+		_ = vs.blobCache.Invalidate(r.Context(), path)
 	}
 
 	w.WriteHeader(http.StatusAccepted)

@@ -202,7 +202,7 @@ runS3() or embedded in startFiler()
     |
     +--> Start gRPC server
     +--> Start HTTP server
-    +--> grace.OnInterrupt(s3a.Shutdown)
+    +--> block on ctx.Done() / graceful shutdown via s3a.Shutdown()
 ```
 
 ### Request Flow
@@ -329,7 +329,7 @@ Config Changes Flow:
 | `goblob/s3api/s3_constants` | Header constants |
 | `goblob/s3api/cors` | CORS handling |
 | `goblob/s3api/policy_engine` | Advanced policy evaluation |
-| `goblob/util/grace` | Config reload signals |
+| `goblob/command` | SIGHUP reload and context-based shutdown |
 
 ## Error Handling
 

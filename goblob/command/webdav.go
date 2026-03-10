@@ -3,8 +3,10 @@ package command
 import (
 	"context"
 	"flag"
+	"net/http"
 	"strings"
 
+	"GoBlob/goblob/security"
 	webdavsrv "GoBlob/goblob/webdav"
 )
 
@@ -54,6 +56,14 @@ func (c *WebDAVCommand) Run(ctx context.Context, args []string) error {
 	} else {
 		fs = webdavsrv.NewFilerFileSystem(c.rootDir)
 	}
-	server := webdavsrv.NewServer(webdavsrv.Address(c.host, c.port), fs, c.username, c.password)
+	harden := func(h http.Handler) http.Handler {
+		return security.ApplyHardening(h, security.HardeningOption{
+			RatePerSecond: 200,
+			Burst:         50,
+			MaxBodyBytes:  256 << 20,
+			Logger:        nil,
+		})
+	}
+	server := webdavsrv.NewServer(webdavsrv.Address(c.host, c.port), fs, c.username, c.password, harden)
 	return server.Start(ctx)
 }

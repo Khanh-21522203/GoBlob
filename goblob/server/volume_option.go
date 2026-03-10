@@ -36,6 +36,8 @@ type VolumeServerOption struct {
 	PreStopSeconds int
 	// PulseSeconds is the interval for pulse updates.
 	PulseSeconds int
+	// CacheMaxEntries is the max number of needles to cache in memory (0 = disabled).
+	CacheMaxEntries int
 }
 
 // DiskDirectoryConfig defines a single storage directory.
@@ -66,5 +68,6 @@ func DefaultVolumeServerOption() *VolumeServerOption {
 		HeartbeatInterval:         5 * time.Second,
 		PreStopSeconds:            10,
 		PulseSeconds:              5,
+		CacheMaxEntries:           1024,
 	}
 }

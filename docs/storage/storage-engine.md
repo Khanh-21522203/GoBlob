@@ -243,7 +243,7 @@ Read Path:
 | `goblob/storage/backend` | Local disk file abstraction |
 | `github.com/syndtr/goleveldb` | LevelDB for needle index |
 | `goblob/util` | Disk space checks, path resolution |
-| `goblob/stats` | Prometheus metrics |
+| `goblob/obs` | Prometheus metrics |
 
 ## Error Handling
 

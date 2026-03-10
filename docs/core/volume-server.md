@@ -157,14 +157,12 @@ runVolume() / startVolumeServer()
     |       +--> security.NewGuard(whiteList, signingKey, ...)
     |       +--> Register HTTP routes
     |       +--> go vs.heartbeat()
-    |       +--> go stats.LoopPushingMetric()
     |
     +--> startGrpcService(volumeServer)
     +--> startPublicHttpService()  (if separate public port)
     +--> startClusterHttpService()
-    +--> grace.OnReload(volumeServer.LoadNewVolumes)
-    +--> grace.OnInterrupt(shutdown)
-    +--> block on stopChan / ctx.Done()
+    +--> SIGHUP handler: volumeServer.LoadNewVolumes + ReloadSecurityConfig
+    +--> block on ctx.Done()
 ```
 
 ## Runtime Sequence Flow
@@ -304,7 +302,7 @@ vs.heartbeat()
 | Goroutine | Purpose |
 |---|---|
 | `vs.heartbeat()` | Streaming gRPC heartbeat to master |
-| `stats.LoopPushingMetric()` | Prometheus metrics push |
+| `obs.StartPushgateway()` | Prometheus metrics push (optional) |
 | `DiskLocation.CheckDiskSpace()` | Per-minute disk space monitoring |
 | `Volume.startWorker()` | Async needle write worker (channel-based) |
 | Compaction | Triggered by master via gRPC; throttled by `compactionBytePerSecond` |
@@ -332,4 +330,4 @@ vs.heartbeat()
 - **LevelDB timeout**: `-index.leveldbTimeout` offloads idle LevelDB instances to reduce memory
 - **Pre-stop delay**: `-preStopSeconds` (default 10) stops heartbeat before shutting down, giving master time to reroute traffic
 - **Separate idx directory**: `-dir.idx` allows storing index files on a different (faster) disk
-- **SIGHUP reload**: `grace.OnReload` triggers `LoadNewVolumes()` and `Reload()` to pick up new volumes without restart
+- **SIGHUP reload**: SIGHUP signal triggers `LoadNewVolumes()` and `ReloadSecurityConfig()` to pick up new volumes without restart

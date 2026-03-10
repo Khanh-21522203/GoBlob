@@ -21,13 +21,16 @@ type Server struct {
 	password string
 }
 
-func NewServer(addr string, fs xwebdav.FileSystem, username, password string) *Server {
+func NewServer(addr string, fs xwebdav.FileSystem, username, password string, middleware func(http.Handler) http.Handler) *Server {
 	if fs == nil {
 		fs = NewFilerFileSystem(".")
 	}
 	h := &xwebdav.Handler{FileSystem: fs, LockSystem: xwebdav.NewMemLS()}
 	s := &Server{addr: addr, username: strings.TrimSpace(username), password: password}
 	s.handler = s.wrapAuth(h)
+	if middleware != nil {
+		s.handler = middleware(s.handler)
+	}
 	s.httpSrv = &http.Server{Addr: addr, Handler: s.handler}
 	return s
 }

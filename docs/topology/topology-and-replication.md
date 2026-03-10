@@ -284,7 +284,7 @@ Replica Placement "100" (one extra copy in different data center):
 | `goblob/storage/types` | DiskType |
 | `goblob/sequence` | Sequencer interface |
 | `goblob/pb/master_pb` | Heartbeat messages, volume info |
-| `goblob/stats` | Prometheus metrics |
+| `goblob/obs` | Prometheus metrics |
 | `goblob/util` | ConcurrentReadMap |
 
 ## Error Handling

@@ -7,7 +7,7 @@ import (
 )
 
 func TestServerBasicAuthWrapper(t *testing.T) {
-	s := NewServer(":0", NewFilerFileSystem(t.TempDir()), "user", "pass")
+	s := NewServer(":0", NewFilerFileSystem(t.TempDir()), "user", "pass", nil)
 
 	req := httptest.NewRequest(http.MethodOptions, "/", nil)
 	resp := httptest.NewRecorder()
