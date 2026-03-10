@@ -2,6 +2,7 @@ package topology
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 
 	"GoBlob/goblob/core/types"
@@ -13,6 +14,7 @@ import (
 type Topology struct {
 	*NodeImpl
 	volumeLayouts *VolumeLayoutCollection
+	nextVolumeId  uint32
 	mu            sync.RWMutex
 }
 
@@ -21,6 +23,7 @@ func NewTopology() *Topology {
 	return &Topology{
 		NodeImpl:      NewNodeImpl("root"),
 		volumeLayouts: NewVolumeLayoutCollection(),
+		nextVolumeId:  1,
 	}
 }
 
@@ -116,6 +119,7 @@ func (t *Topology) processVolume(dataNode *DataNode, volInfo *master_pb.VolumeIn
 
 	// Update the data node's disk info
 	dataNode.AddOrUpdateVolume(volInfo)
+	t.setMaxVolumeIDUnsafe(volInfo.Id)
 
 	return nil
 }
@@ -145,14 +149,26 @@ func (t *Topology) AllocateVolumeCandidates(collection string, replicaPlacement 
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
-	replication := replicaPlacement.String()
-	vl := t.volumeLayouts.Get(collection, replication, ttl, diskType)
-	if vl == nil {
-		return nil, fmt.Errorf("volume layout not found for collection=%s replication=%s ttl=%s diskType=%s",
-			collection, replication, ttl, diskType)
-	}
+	_ = collection
+	_ = ttl
+	_ = replicaPlacement
 
-	return vl.FindEmptySlots(replication), nil
+	var candidates []*DataNode
+	t.forEachNode(t.NodeImpl, func(node Node) bool {
+		dn, ok := node.ToDataNode()
+		if !ok {
+			return true
+		}
+		if !dn.IsAlive() || !dn.HasFreeSlot(diskType) {
+			return true
+		}
+		candidates = append(candidates, dn)
+		return true
+	})
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].GetId() < candidates[j].GetId()
+	})
+	return candidates, nil
 }
 
 // GetVolumeLayout returns the volume layout for the given parameters.
@@ -289,4 +305,59 @@ func (t *Topology) ToProto() []*master_pb.VolumeLocation {
 	})
 
 	return result
+}
+
+// NextVolumeId allocates and returns the next logical volume ID.
+func (t *Topology) NextVolumeId() uint32 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.nextVolumeId == 0 {
+		t.nextVolumeId = 1
+	}
+	vid := t.nextVolumeId
+	t.nextVolumeId++
+	return vid
+}
+
+// AllocateNextVolumeId allocates the next volume ID, optionally validating it
+// (for example by replicating max volume ID via Raft) before committing.
+func (t *Topology) AllocateNextVolumeId(validate func(uint32) error) (uint32, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.nextVolumeId == 0 {
+		t.nextVolumeId = 1
+	}
+	vid := t.nextVolumeId
+	if validate != nil {
+		if err := validate(vid); err != nil {
+			return 0, err
+		}
+	}
+	t.nextVolumeId++
+	return vid, nil
+}
+
+// SetMaxVolumeId advances the internal allocator to at least maxVolumeId+1.
+func (t *Topology) SetMaxVolumeId(maxVolumeId uint32) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.setMaxVolumeIDUnsafe(maxVolumeId)
+}
+
+// GetMaxVolumeId returns the highest observed volume ID.
+func (t *Topology) GetMaxVolumeId() uint32 {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	if t.nextVolumeId == 0 {
+		return 0
+	}
+	return t.nextVolumeId - 1
+}
+
+func (t *Topology) setMaxVolumeIDUnsafe(maxVolumeId uint32) {
+	if maxVolumeId >= t.nextVolumeId {
+		t.nextVolumeId = maxVolumeId + 1
+	}
 }

@@ -48,8 +48,8 @@ func TestHandleFileDownload(t *testing.T) {
 	w := httptest.NewRecorder()
 	fs.handleFileDownload(w, req)
 
-	if w.Code != http.StatusNotFound {
-		t.Errorf("expected status 404 with no filer, got %d", w.Code)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected status 503 with no filer store, got %d", w.Code)
 	}
 }
 
@@ -141,7 +141,7 @@ func TestFilerCreateEntry(t *testing.T) {
 	dirEntry := &filer.Entry{
 		FullPath: filer.FullPath("/test"),
 		Attr: filer.Attr{
-			Mode: os.ModeDir,
+			Mode:  os.ModeDir,
 			Mtime: time.Now(),
 		},
 	}

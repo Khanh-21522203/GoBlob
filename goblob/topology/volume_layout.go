@@ -46,9 +46,9 @@ func NewVolumeLayout(collection, replication, ttl string, diskType types.DiskTyp
 	}
 }
 
-func (vl *VolumeLayout) GetCollection() string  { return vl.collection }
-func (vl *VolumeLayout) GetReplication() string { return vl.replication }
-func (vl *VolumeLayout) GetTtl() string         { return vl.ttl }
+func (vl *VolumeLayout) GetCollection() string       { return vl.collection }
+func (vl *VolumeLayout) GetReplication() string      { return vl.replication }
+func (vl *VolumeLayout) GetTtl() string              { return vl.ttl }
 func (vl *VolumeLayout) GetDiskType() types.DiskType { return vl.diskType }
 
 // AddVolumeLayout registers a volume location (one DataNode hosting a replica).
@@ -58,13 +58,17 @@ func (vl *VolumeLayout) AddVolumeLayout(loc *VolumeLocation) {
 		return
 	}
 	vid := loc.VolumeId
+
 	if loc.IsReadOnly() {
-		existing, _ := vl.readonlyVolumes.Get(vid)
-		vl.readonlyVolumes.Set(vid, append(existing, loc))
-	} else {
-		existing, _ := vl.writableVolumes.Get(vid)
-		vl.writableVolumes.Set(vid, append(existing, loc))
+		vl.removeLocationFromMap(vl.writableVolumes, vid, loc.DataNode)
+		vl.removeLocationFromMap(vl.crowdedVolumes, vid, loc.DataNode)
+		vl.upsertLocation(vl.readonlyVolumes, vid, loc)
+		return
 	}
+
+	vl.removeLocationFromMap(vl.readonlyVolumes, vid, loc.DataNode)
+	vl.removeLocationFromMap(vl.crowdedVolumes, vid, loc.DataNode)
+	vl.upsertLocation(vl.writableVolumes, vid, loc)
 }
 
 // RemoveVolumeLocation removes ALL replica locations for a volume.
@@ -237,10 +241,63 @@ func (vl *VolumeLayout) ToVolumeLocations(vid uint32) []*master_pb.VolumeLocatio
 	return result
 }
 
+func (vl *VolumeLayout) upsertLocation(m *util.ConcurrentReadMap[uint32, []*VolumeLocation], vid uint32, loc *VolumeLocation) {
+	existing, _ := m.Get(vid)
+	nodeID := ""
+	if loc.DataNode != nil {
+		nodeID = loc.DataNode.GetId()
+	}
+
+	for i, e := range existing {
+		if sameDataNode(e, nodeID, loc.DataNode) {
+			existing[i] = loc
+			m.Set(vid, existing)
+			return
+		}
+	}
+	m.Set(vid, append(existing, loc))
+}
+
+func (vl *VolumeLayout) removeLocationFromMap(m *util.ConcurrentReadMap[uint32, []*VolumeLocation], vid uint32, node *DataNode) {
+	locs, ok := m.Get(vid)
+	if !ok {
+		return
+	}
+
+	nodeID := ""
+	if node != nil {
+		nodeID = node.GetId()
+	}
+
+	filtered := locs[:0]
+	for _, loc := range locs {
+		if sameDataNode(loc, nodeID, node) {
+			continue
+		}
+		filtered = append(filtered, loc)
+	}
+
+	if len(filtered) == 0 {
+		m.Delete(vid)
+		return
+	}
+	m.Set(vid, filtered)
+}
+
+func sameDataNode(loc *VolumeLocation, nodeID string, node *DataNode) bool {
+	if loc == nil {
+		return false
+	}
+	if nodeID != "" && loc.DataNode != nil {
+		return loc.DataNode.GetId() == nodeID
+	}
+	return node != nil && loc.DataNode == node
+}
+
 // VolumeLocation represents one server hosting a volume replica.
 type VolumeLocation struct {
-	DataNode   *DataNode
-	VolumeId   uint32
+	DataNode    *DataNode
+	VolumeId    uint32
 	collection  string
 	replication string
 	ttl         string
@@ -256,10 +313,10 @@ func NewVolumeLocation(dataNode *DataNode, vid uint32) *VolumeLocation {
 
 func (vl *VolumeLocation) GetDataNode() *DataNode { return vl.DataNode }
 func (vl *VolumeLocation) GetVolumeId() uint32    { return vl.VolumeId }
-func (vl *VolumeLocation) IsReadOnly() bool        { return vl.isReadOnly }
-func (vl *VolumeLocation) SetReadOnly(ro bool)     { vl.isReadOnly = ro }
-func (vl *VolumeLocation) GetSize() uint64         { return vl.size }
-func (vl *VolumeLocation) SetSize(size uint64)     { vl.size = size }
+func (vl *VolumeLocation) IsReadOnly() bool       { return vl.isReadOnly }
+func (vl *VolumeLocation) SetReadOnly(ro bool)    { vl.isReadOnly = ro }
+func (vl *VolumeLocation) GetSize() uint64        { return vl.size }
+func (vl *VolumeLocation) SetSize(size uint64)    { vl.size = size }
 
 // ToProto converts the volume location to protobuf format.
 func (vl *VolumeLocation) ToProto() *master_pb.VolumeLocation {

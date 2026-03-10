@@ -26,8 +26,17 @@ type MasterClient struct {
 
 // NewMasterClient creates a new MasterClient.
 func NewMasterClient(masterAddresses []string, grpcDialOption grpc.DialOption) *MasterClient {
+	normalized := make([]string, 0, len(masterAddresses))
+	for _, addr := range masterAddresses {
+		normalized = append(normalized, string(types.ServerAddress(addr).ToGrpcAddress()))
+	}
+	var current types.ServerAddress
+	if len(normalized) > 0 {
+		current = types.ServerAddress(normalized[0])
+	}
 	return &MasterClient{
-		masterAddresses: masterAddresses,
+		masterAddresses: normalized,
+		currentMaster:   current,
 		grpcDialOption:  grpcDialOption,
 		vidCache:        NewVidCache(10 * time.Minute),
 	}
@@ -44,7 +53,7 @@ func (mc *MasterClient) GetCurrentMaster() types.ServerAddress {
 func (mc *MasterClient) SetCurrentMaster(addr types.ServerAddress) {
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
-	mc.currentMaster = addr
+	mc.currentMaster = addr.ToGrpcAddress()
 }
 
 // LookupVolumeId looks up the locations for a volume ID.
@@ -58,9 +67,10 @@ func (mc *MasterClient) LookupVolumeId(ctx context.Context, vid types.VolumeId) 
 	if master == "" {
 		return nil, fmt.Errorf("no master server known")
 	}
+	grpcMaster := master.ToGrpcAddress()
 
 	var locations []Location
-	err := pb.WithMasterServerClient(string(master), mc.grpcDialOption, func(client master_pb.MasterServiceClient) error {
+	err := pb.WithMasterServerClient(string(grpcMaster), mc.grpcDialOption, func(client master_pb.MasterServiceClient) error {
 		req := &master_pb.LookupVolumeRequest{
 			VolumeOrFileIds: []string{strconv.FormatUint(uint64(vid), 10)},
 		}
@@ -103,8 +113,17 @@ func (mc *MasterClient) KeepConnectedToMaster(ctx context.Context, clientType st
 		if master == "" && len(mc.masterAddresses) > 0 {
 			master = types.ServerAddress(mc.masterAddresses[0])
 		}
+		if master == "" {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Second):
+				continue
+			}
+		}
+		grpcMaster := master.ToGrpcAddress()
 
-		err := pb.WithMasterServerClient(string(master), mc.grpcDialOption, func(client master_pb.MasterServiceClient) error {
+		err := pb.WithMasterServerClient(string(grpcMaster), mc.grpcDialOption, func(client master_pb.MasterServiceClient) error {
 			stream, err := client.KeepConnected(ctx)
 			if err != nil {
 				return err

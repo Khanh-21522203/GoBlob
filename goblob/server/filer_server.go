@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -16,26 +17,27 @@ import (
 
 	"GoBlob/goblob/filer"
 	"GoBlob/goblob/log_buffer"
+	"GoBlob/goblob/pb/filer_pb"
 	"GoBlob/goblob/security"
 )
 
 // FilerServer is the metadata server for the GoBlob filesystem.
 type FilerServer struct {
-	option             *FilerOption
-	filer              *filer.Filer
-	filerGuard         *security.Guard
-	volumeGuard        *security.Guard
-	grpcServer         *grpc.Server
-	knownListeners     map[int32]bool
-	listenersMu        sync.Mutex
-	listenersCond      *sync.Cond
-	inFlightDataSize   int64
-	inFlightLimitCond  *sync.Cond
-	logBuffer          *log_buffer.LogBuffer
-	dlm                *filer.DistributedLockManager
-	ctx                context.Context
-	cancel             context.CancelFunc
-	logger             *slog.Logger
+	option            *FilerOption
+	filer             *filer.Filer
+	filerGuard        *security.Guard
+	volumeGuard       *security.Guard
+	grpcServer        *grpc.Server
+	knownListeners    map[int32]bool
+	listenersMu       sync.Mutex
+	listenersCond     *sync.Cond
+	inFlightDataSize  int64
+	inFlightLimitCond *sync.Cond
+	logBuffer         *log_buffer.LogBuffer
+	dlm               *filer.DistributedLockManager
+	ctx               context.Context
+	cancel            context.CancelFunc
+	logger            *slog.Logger
 }
 
 // NewFilerServer creates and initializes a new FilerServer.
@@ -50,40 +52,38 @@ func NewFilerServer(defaultMux, readonlyMux *http.ServeMux, grpcServer *grpc.Ser
 
 	// Create log buffer
 	logBuf := log_buffer.NewLogBuffer(
-		3,                      // maxSegmentCount
-		2*1024*1024,             // maxSegmentBytes
+		3,           // maxSegmentCount
+		2*1024*1024, // maxSegmentBytes
 		time.Duration(opt.LogFlushIntervalSeconds)*time.Second, // flushInterval
-		nil,                    // notifyFn (set later)
-		nil,                    // flushFn (set later)
+		nil, // notifyFn (set later)
+		nil, // flushFn (set later)
 		logger,
 	)
 
 	// Create lock manager
 	dlm := filer.NewDistributedLockManager(nil, logger) // store set later
 
-	// Create limit cond
-	listenersMu := &sync.Mutex{}
-	inFlightMu := &sync.Mutex{}
-
 	filerServer := &FilerServer{
-		option:            opt,
-		filerGuard:        filerGuard,
-		volumeGuard:       volumeGuard,
-		grpcServer:        grpcServer,
-		knownListeners:    make(map[int32]bool),
-		listenersMu:       *listenersMu,
-		listenersCond:     sync.NewCond(listenersMu),
-		inFlightDataSize:  0,
-		inFlightLimitCond: sync.NewCond(inFlightMu),
-		logBuffer:         logBuf,
-		dlm:               dlm,
-		ctx:               ctx,
-		cancel:            cancel,
-		logger:            logger,
+		option:           opt,
+		filerGuard:       filerGuard,
+		volumeGuard:      volumeGuard,
+		grpcServer:       grpcServer,
+		knownListeners:   make(map[int32]bool),
+		inFlightDataSize: 0,
+		logBuffer:        logBuf,
+		dlm:              dlm,
+		ctx:              ctx,
+		cancel:           cancel,
+		logger:           logger,
 	}
+	filerServer.listenersCond = sync.NewCond(&filerServer.listenersMu)
+	filerServer.inFlightLimitCond = sync.NewCond(&sync.Mutex{})
 
 	// Register HTTP routes
 	filerServer.registerRoutes(defaultMux, readonlyMux)
+	if grpcServer != nil {
+		filer_pb.RegisterFilerServiceServer(grpcServer, NewFilerGRPCServer(filerServer))
+	}
 
 	return filerServer, nil
 }
@@ -91,13 +91,13 @@ func NewFilerServer(defaultMux, readonlyMux *http.ServeMux, grpcServer *grpc.Ser
 // registerRoutes registers HTTP handlers for the filer server.
 func (fs *FilerServer) registerRoutes(defaultMux, readonlyMux *http.ServeMux) {
 	// Read/write routes
-	defaultMux.HandleFunc("POST /{path}", fs.handleFileUpload)
-	defaultMux.HandleFunc("GET /{path}", fs.handleFileDownload)
-	defaultMux.HandleFunc("DELETE /{path}", fs.handleDeleteEntry)
+	defaultMux.HandleFunc("POST /{path...}", fs.handleFileUpload)
+	defaultMux.HandleFunc("GET /{path...}", fs.handleFileDownload)
+	defaultMux.HandleFunc("DELETE /{path...}", fs.handleDeleteEntry)
 	defaultMux.HandleFunc("GET /healthz", fs.handleHealthz)
 
 	// Read-only routes
-	readonlyMux.HandleFunc("GET /{path}", fs.handleFileDownload)
+	readonlyMux.HandleFunc("GET /{path...}", fs.handleFileDownload)
 }
 
 // SetStore sets the filer store.
@@ -107,6 +107,8 @@ func (fs *FilerServer) SetStore(store filer.FilerStore) {
 	} else {
 		fs.filer.SetStore(store)
 	}
+	fs.dlm = filer.NewDistributedLockManager(store, fs.logger)
+	fs.filer.Dlm = fs.dlm
 }
 
 // Start starts the filer server.
@@ -132,6 +134,15 @@ func (fs *FilerServer) Shutdown() {
 
 // handleFileUpload handles POST /{path} requests.
 func (fs *FilerServer) handleFileUpload(w http.ResponseWriter, r *http.Request) {
+	if !fs.requireFiler(w) {
+		return
+	}
+
+	contentLength := r.ContentLength
+	if contentLength < 0 {
+		contentLength = 0
+	}
+
 	// Throttle in-flight data
 	if fs.option.ConcurrentUploadLimitMB > 0 {
 		limit := fs.option.ConcurrentUploadLimitMB * 1024 * 1024
@@ -139,12 +150,14 @@ func (fs *FilerServer) handleFileUpload(w http.ResponseWriter, r *http.Request) 
 		for atomic.LoadInt64(&fs.inFlightDataSize) > limit {
 			fs.inFlightLimitCond.Wait()
 		}
-		atomic.AddInt64(&fs.inFlightDataSize, r.ContentLength)
+		atomic.AddInt64(&fs.inFlightDataSize, contentLength)
 		fs.inFlightLimitCond.L.Unlock()
 
 		defer func() {
-			atomic.AddInt64(&fs.inFlightDataSize, -r.ContentLength)
+			atomic.AddInt64(&fs.inFlightDataSize, -contentLength)
+			fs.inFlightLimitCond.L.Lock()
 			fs.inFlightLimitCond.Signal()
+			fs.inFlightLimitCond.L.Unlock()
 		}()
 	}
 
@@ -155,7 +168,7 @@ func (fs *FilerServer) handleFileUpload(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Get path from URL
-	path := "/" + r.URL.Path[1:]
+	path := normalizeAbsolutePath(r.URL.Path)
 
 	// For Phase 4, only support inline storage (<64KB)
 	if r.ContentLength > 64*1024 {
@@ -186,13 +199,11 @@ func (fs *FilerServer) handleFileUpload(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Create entry in store
-	if fs.filer != nil {
-		err = fs.filer.CreateEntry(fs.ctx, entry)
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
-			return
-		}
+	err = fs.filer.CreateEntry(fs.ctx, entry)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
 	}
 
 	// Append to log buffer
@@ -213,6 +224,10 @@ func (fs *FilerServer) handleFileUpload(w http.ResponseWriter, r *http.Request) 
 
 // handleFileDownload handles GET /{path} requests.
 func (fs *FilerServer) handleFileDownload(w http.ResponseWriter, r *http.Request) {
+	if !fs.requireFiler(w) {
+		return
+	}
+
 	// Check authorization
 	if !fs.filerGuard.FilerAllowed(r) {
 		w.WriteHeader(http.StatusUnauthorized)
@@ -220,13 +235,7 @@ func (fs *FilerServer) handleFileDownload(w http.ResponseWriter, r *http.Request
 	}
 
 	// Get path from URL
-	path := "/" + r.URL.Path[1:]
-
-	// Find entry
-	if fs.filer == nil {
-		w.WriteHeader(http.StatusNotFound)
-		return
-	}
+	path := normalizeAbsolutePath(r.URL.Path)
 
 	entry, err := fs.filer.FindEntry(fs.ctx, filer.FullPath(path))
 	if err != nil {
@@ -257,6 +266,10 @@ func (fs *FilerServer) handleFileDownload(w http.ResponseWriter, r *http.Request
 
 // handleDeleteEntry handles DELETE /{path} requests.
 func (fs *FilerServer) handleDeleteEntry(w http.ResponseWriter, r *http.Request) {
+	if !fs.requireFiler(w) {
+		return
+	}
+
 	// Check authorization
 	if !fs.filerGuard.FilerAllowed(r) {
 		w.WriteHeader(http.StatusUnauthorized)
@@ -264,19 +277,17 @@ func (fs *FilerServer) handleDeleteEntry(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Get path from URL
-	path := "/" + r.URL.Path[1:]
+	path := normalizeAbsolutePath(r.URL.Path)
 
 	// Delete entry
-	if fs.filer != nil {
-		err := fs.filer.DeleteEntry(fs.ctx, filer.FullPath(path))
-		if err != nil {
-			if err == filer.ErrNotFound {
-				w.WriteHeader(http.StatusNotFound)
-			} else {
-				w.WriteHeader(http.StatusInternalServerError)
-			}
-			return
+	err := fs.filer.DeleteEntry(fs.ctx, filer.FullPath(path))
+	if err != nil {
+		if err == filer.ErrNotFound {
+			w.WriteHeader(http.StatusNotFound)
+		} else {
+			w.WriteHeader(http.StatusInternalServerError)
 		}
+		return
 	}
 
 	// Append to log buffer
@@ -289,4 +300,21 @@ func (fs *FilerServer) handleDeleteEntry(w http.ResponseWriter, r *http.Request)
 func (fs *FilerServer) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("OK"))
+}
+
+func (fs *FilerServer) requireFiler(w http.ResponseWriter) bool {
+	if fs.filer != nil && fs.filer.Store != nil {
+		return true
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": "filer store not initialized"})
+	return false
+}
+
+func normalizeAbsolutePath(raw string) string {
+	if raw == "" {
+		return "/"
+	}
+	return path.Clean("/" + raw)
 }

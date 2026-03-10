@@ -2,15 +2,20 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"time"
 
+	"google.golang.org/grpc"
 	"log/slog"
 
 	"GoBlob/goblob/cluster"
+	"GoBlob/goblob/pb/master_pb"
 	"GoBlob/goblob/raft"
 	"GoBlob/goblob/security"
 	"GoBlob/goblob/sequence"
@@ -26,16 +31,23 @@ type MasterServer struct {
 	Raft                    raft.RaftServer
 	Cluster                 *cluster.ClusterRegistry
 	Guard                   *security.Guard
-	option                 *MasterOption
+	option                  *MasterOption
 	volumeGrowthRequestChan chan *topology.VolumeGrowOption
-	ctx                    context.Context
-	cancel                 context.CancelFunc
-	logger                 *slog.Logger
-	isLeader               atomic.Bool
+	ctx                     context.Context
+	cancel                  context.CancelFunc
+	logger                  *slog.Logger
+	isLeader                atomic.Bool
+	topologyId              atomic.Value
 }
 
 // NewMasterServer creates and initializes a new MasterServer.
 func NewMasterServer(mux *http.ServeMux, opt *MasterOption) (*MasterServer, error) {
+	return NewMasterServerWithGRPC(mux, nil, opt)
+}
+
+// NewMasterServerWithGRPC creates and initializes a new MasterServer and registers
+// the gRPC service if grpcServer is provided.
+func NewMasterServerWithGRPC(mux *http.ServeMux, grpcServer *grpc.Server, opt *MasterOption) (*MasterServer, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	logger := slog.Default().With("server", "master")
@@ -46,15 +58,10 @@ func NewMasterServer(mux *http.ServeMux, opt *MasterOption) (*MasterServer, erro
 	// Create volume growth manager
 	vg := topology.NewVolumeGrowth(topo)
 
-	// Create sequencer
+	// Create sequencer config.
 	seqConfig := &sequence.Config{
 		DataDir:  filepath.Join(opt.MetaDir, "sequencer"),
 		StepSize: 10000,
-	}
-	sequencer, err := sequence.NewFileSequencer(seqConfig)
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("failed to create sequencer: %w", err)
 	}
 
 	// Create Raft config
@@ -72,16 +79,29 @@ func NewMasterServer(mux *http.ServeMux, opt *MasterOption) (*MasterServer, erro
 		MaxAppendEntries:   32,
 	}
 
+	var (
+		sequencer   sequence.Sequencer
+		sequencerMu sync.RWMutex
+		ms          *MasterServer
+	)
+
 	// Create FSM
 	fsm := raft.NewMasterFSM(
 		func(maxFileId uint64) {
-			sequencer.SetMax(maxFileId)
+			sequencerMu.RLock()
+			s := sequencer
+			sequencerMu.RUnlock()
+			if s != nil {
+				s.SetMax(maxFileId)
+			}
 		},
 		func(maxVolumeId uint32) {
-			// TODO: handle max volume ID
+			ms.Topo.SetMaxVolumeId(maxVolumeId)
 		},
 		func(topologyId string) {
-			// TODO: handle topology ID
+			if topologyId != "" {
+				ms.topologyId.Store(topologyId)
+			}
 		},
 	)
 
@@ -92,30 +112,74 @@ func NewMasterServer(mux *http.ServeMux, opt *MasterOption) (*MasterServer, erro
 	signingKey, _ := security.GenerateSigningKey(32)
 	guard := security.NewGuard("", signingKey, "")
 
-	// Create Raft server (without leader callback for now)
-	raftServer, err := raft.NewRaftServer(raftConfig, fsm, nil)
-	if err != nil {
-		cancel()
-		sequencer.Close()
-		return nil, fmt.Errorf("failed to create Raft server: %w", err)
-	}
-
-	ms := &MasterServer{
+	ms = &MasterServer{
 		Topo:                    topo,
 		Vg:                      vg,
-		Sequencer:               sequencer,
-		Raft:                    raftServer,
 		Cluster:                 clusterReg,
 		Guard:                   guard,
-		option:                 opt,
+		option:                  opt,
 		volumeGrowthRequestChan: make(chan *topology.VolumeGrowOption, 100),
 		ctx:                     ctx,
 		cancel:                  cancel,
 		logger:                  logger,
 	}
 
+	raftServer, err := raft.NewRaftServer(raftConfig, fsm, func(isLeader bool) {
+		ms.isLeader.Store(isLeader)
+		if isLeader {
+			if err := ms.Raft.Barrier(10 * time.Second); err != nil {
+				ms.logger.Warn("raft barrier failed on leadership", "error", err)
+			}
+			if fsm.GetTopologyId() == "" {
+				topologyID := generateTopologyID()
+				if err := ms.Raft.Apply(raft.TopologyIdCommand{TopologyId: topologyID}, 5*time.Second); err != nil {
+					ms.logger.Warn("failed to initialize topology id", "error", err)
+				} else {
+					ms.topologyId.Store(topologyID)
+				}
+			}
+		} else {
+			ms.logger.Info("lost leadership")
+		}
+	})
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to create Raft server: %w", err)
+	}
+	ms.Raft = raftServer
+
+	raftSequencer, err := sequence.NewRaftSequencer(seqConfig, raftServer)
+	if err != nil {
+		cancel()
+		_ = raftServer.Shutdown()
+		return nil, fmt.Errorf("failed to create raft sequencer: %w", err)
+	}
+	ms.Sequencer = raftSequencer
+	sequencerMu.Lock()
+	sequencer = raftSequencer
+	sequencerMu.Unlock()
+	if maxFileID := fsm.GetMaxFileId(); maxFileID > 0 {
+		ms.Sequencer.SetMax(maxFileID)
+	}
+	if maxVolumeID := fsm.GetMaxVolumeId(); maxVolumeID > 0 {
+		ms.Topo.SetMaxVolumeId(maxVolumeID)
+	}
+	ms.isLeader.Store(ms.Raft.IsLeader())
+	if topologyID := fsm.GetTopologyId(); topologyID != "" {
+		ms.topologyId.Store(topologyID)
+	}
+	ms.Vg.SetMaxVolumeIdReplicator(func(maxVid uint32) error {
+		if ms.Raft == nil {
+			return fmt.Errorf("raft not initialized")
+		}
+		return ms.Raft.Apply(raft.MaxVolumeIdCommand{MaxVolumeId: maxVid}, 5*time.Second)
+	})
+
 	// Register HTTP routes
 	ms.registerRoutes(mux)
+	if grpcServer != nil {
+		master_pb.RegisterMasterServiceServer(grpcServer, NewMasterGRPCServer(ms))
+	}
 
 	// Start background goroutines
 	go ms.processVolumeGrowRequests()
@@ -158,9 +222,23 @@ func (ms *MasterServer) processVolumeGrowRequests() {
 			if req == nil {
 				continue
 			}
-			// In a full implementation, this would call vg.AutomaticGrowByType
-			// For now, just log the request
-			ms.logger.Info("volume growth request", "collection", req.Collection)
+			if ms.Raft != nil && !ms.Raft.IsLeader() {
+				continue
+			}
+			created, err := ms.Vg.CheckAndGrow(ms.ctx, req.Collection, req.ReplicaPlacement, req.Ttl, req.DiskType, 1)
+			if err != nil {
+				ms.logger.Warn("volume growth failed", "collection", req.Collection, "error", err)
+				continue
+			}
+			ms.logger.Info("volume growth completed", "collection", req.Collection, "created", created)
 		}
 	}
+}
+
+func generateTopologyID() string {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return fmt.Sprintf("topo-%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(raw[:])
 }

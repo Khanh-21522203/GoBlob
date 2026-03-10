@@ -3,10 +3,12 @@ package server
 import (
 	"encoding/json"
 	"math/rand"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"GoBlob/goblob/core/types"
 	"GoBlob/goblob/security"
@@ -49,15 +51,15 @@ type Location struct {
 
 // LookupResponse is the JSON response for /dir/lookup.
 type LookupResponse struct {
-	VolumeId   string     `json:"volumeId,omitempty"`
-	Locations  []Location `json:"locations"`
-	Error      string     `json:"error,omitempty"`
+	VolumeId  string     `json:"volumeId,omitempty"`
+	Locations []Location `json:"locations"`
+	Error     string     `json:"error,omitempty"`
 }
 
 // handleAssign handles POST /dir/assign requests.
 func (ms *MasterServer) handleAssign(w http.ResponseWriter, r *http.Request) {
 	// Leader check
-	if !ms.isLeader.Load() {
+	if ms.Raft == nil || !ms.Raft.IsLeader() {
 		ms.proxyToLeader(w, r)
 		return
 	}
@@ -79,9 +81,10 @@ func (ms *MasterServer) handleAssign(w http.ResponseWriter, r *http.Request) {
 	if replication == "" {
 		replication = ms.option.DefaultReplication
 	}
+	replicaPlacement := types.ParseReplicaPlacementString(replication)
 	ttl := q.Get("ttl")
 	_ = q.Get("dataCenter") // not used yet
-	_ = q.Get("rack")        // not used yet
+	_ = q.Get("rack")       // not used yet
 	diskType := q.Get("diskType")
 
 	// Get or create volume layout
@@ -89,9 +92,10 @@ func (ms *MasterServer) handleAssign(w http.ResponseWriter, r *http.Request) {
 
 	// Pick for write (find writable volume)
 	vid, locations, err := volumeLayout.PickForWrite(&topology.VolumeGrowOption{
-		Collection: collection,
-		Ttl:        ttl,
-		DiskType:   types.DiskType(diskType),
+		Collection:       collection,
+		ReplicaPlacement: replicaPlacement,
+		Ttl:              ttl,
+		DiskType:         types.DiskType(diskType),
 	})
 	if err != nil || len(locations) == 0 {
 		// No writable volumes - send growth request
@@ -193,11 +197,17 @@ func (ms *MasterServer) handleLookup(w http.ResponseWriter, r *http.Request) {
 
 // handleStatus handles GET /dir/status requests.
 func (ms *MasterServer) handleStatus(w http.ResponseWriter, r *http.Request) {
+	leader := false
+	raftStats := map[string]string{}
+	if ms.Raft != nil {
+		leader = ms.Raft.IsLeader()
+		raftStats = ms.Raft.Stats()
+	}
 	status := map[string]interface{}{
-		"isLeader":          ms.isLeader.Load(),
-		"topology":          ms.Topo.ToProto(),
-		"dataCenterCount":   ms.Topo.GetTotalDataCenterCount(),
-		"raft":              ms.Raft.Stats(),
+		"isLeader":        leader,
+		"topology":        ms.Topo.ToProto(),
+		"dataCenterCount": ms.Topo.GetTotalDataCenterCount(),
+		"raft":            raftStats,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -206,7 +216,7 @@ func (ms *MasterServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 // handleVolGrow handles POST /vol/grow requests.
 func (ms *MasterServer) handleVolGrow(w http.ResponseWriter, r *http.Request) {
-	if !ms.isLeader.Load() {
+	if ms.Raft == nil || !ms.Raft.IsLeader() {
 		ms.proxyToLeader(w, r)
 		return
 	}
@@ -220,35 +230,43 @@ func (ms *MasterServer) handleVolGrow(w http.ResponseWriter, r *http.Request) {
 	}
 	ttl := q.Get("ttl")
 	countStr := q.Get("count")
-	_ = countStr // count is not used yet
-	_ = uint64(7) // default growth count - not used yet
+	count := uint64(1)
+	if countStr != "" {
+		if c, err := strconv.ParseUint(countStr, 10, 64); err == nil && c > 0 {
+			count = c
+		}
+	}
 
 	// Send to volume growth channel
+	replicaPlacement := types.ParseReplicaPlacementString(replication)
 	option := &topology.VolumeGrowOption{
 		Collection:       collection,
-		ReplicaPlacement: types.ReplicaPlacement{}, // Parse from replication string if needed
+		ReplicaPlacement: replicaPlacement,
 		Ttl:              ttl,
 		DiskType:         types.DefaultDiskType,
 	}
 
-	select {
-	case ms.volumeGrowthRequestChan <- option:
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-	default:
-		w.WriteHeader(http.StatusServiceUnavailable)
-		json.NewEncoder(w).Encode(map[string]string{"error": "volume growth channel full"})
+	for i := uint64(0); i < count; i++ {
+		select {
+		case ms.volumeGrowthRequestChan <- option:
+		default:
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(map[string]string{"error": "volume growth channel full"})
+			return
+		}
 	}
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
 // handleVacuum handles POST /vol/vacuum requests.
 func (ms *MasterServer) handleVacuum(w http.ResponseWriter, r *http.Request) {
-	if !ms.isLeader.Load() {
+	if ms.Raft == nil || !ms.Raft.IsLeader() {
 		ms.proxyToLeader(w, r)
 		return
 	}
 
-	// TODO: Implement vacuum (Phase 5)
+	// Vacuum integration into storage servers is handled elsewhere.
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
@@ -268,8 +286,10 @@ func (ms *MasterServer) proxyToLeader(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	leaderHTTPAddr := leaderToHTTPAddress(leader)
+
 	// Build leader URL
-	leaderURL, err := url.Parse("http://" + leader)
+	leaderURL, err := url.Parse("http://" + leaderHTTPAddr)
 	if err != nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		json.NewEncoder(w).Encode(map[string]string{"error": "invalid leader address"})
@@ -285,4 +305,25 @@ func (ms *MasterServer) proxyToLeader(w http.ResponseWriter, r *http.Request) {
 
 	// Proxy the request
 	proxy.ServeHTTP(w, r)
+}
+
+// leaderToHTTPAddress converts a raft/gRPC address to the HTTP endpoint.
+// Cluster convention uses gRPC port = HTTP port + 10000.
+func leaderToHTTPAddress(addr string) string {
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return addr
+	}
+	if port >= 10000 {
+		return net.JoinHostPort(host, strconv.Itoa(port-10000))
+	}
+	if strings.Contains(addr, ".") {
+		// Support explicit grpc suffix format used by types.ServerAddress helpers.
+		return string(types.ServerAddress(addr).ToHttpAddress())
+	}
+	return addr
 }

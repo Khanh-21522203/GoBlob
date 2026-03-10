@@ -1,21 +1,31 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"crypto/md5"
 	"encoding/json"
 	"fmt"
+	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	"log/slog"
 
 	"GoBlob/goblob/core/types"
+	"GoBlob/goblob/pb"
+	"GoBlob/goblob/pb/master_pb"
+	"GoBlob/goblob/pb/volume_server_pb"
 	"GoBlob/goblob/replication"
 	"GoBlob/goblob/security"
 	"GoBlob/goblob/storage"
+	"GoBlob/goblob/storage/needle"
 )
 
 // VolumeServer is the data plane server storing blobs and serving read/write requests.
@@ -99,6 +109,9 @@ func NewVolumeServer(adminMux, publicMux *http.ServeMux, grpcServer *grpc.Server
 
 	// Register HTTP routes
 	vs.registerRoutes(adminMux, publicMux)
+	if grpcServer != nil {
+		volume_server_pb.RegisterVolumeServerServer(grpcServer, NewVolumeGRPCServer(vs))
+	}
 
 	return vs, nil
 }
@@ -146,41 +159,97 @@ func (vs *VolumeServer) handleWrite(w http.ResponseWriter, r *http.Request) {
 	// Upload throttle
 	if vs.option.ConcurrentUploadLimitMB > 0 {
 		limit := vs.option.ConcurrentUploadLimitMB * 1024 * 1024
+		incoming := r.ContentLength
+		if incoming < 0 {
+			incoming = 0
+		}
 		vs.uploadLimitCond.L.Lock()
-		for atomic.LoadInt64(&vs.inFlightUpload) > limit {
+		for atomic.LoadInt64(&vs.inFlightUpload)+incoming > limit {
 			vs.uploadLimitCond.Wait()
 		}
-		atomic.AddInt64(&vs.inFlightUpload, r.ContentLength)
+		atomic.AddInt64(&vs.inFlightUpload, incoming)
 		vs.uploadLimitCond.L.Unlock()
 
 		defer func() {
-			atomic.AddInt64(&vs.inFlightUpload, -r.ContentLength)
+			atomic.AddInt64(&vs.inFlightUpload, -incoming)
 			vs.uploadLimitCond.Signal()
 		}()
 	}
 
 	// Check authorization
-	if !vs.guard.Allowed(r, false) {
+	if !vs.guard.Allowed(r, true) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
 
 	// Parse FileId from URL
 	path := r.URL.Path[1:] // remove leading "/"
-	_, err := types.ParseFileId(path)
+	fid, err := types.ParseFileId(path)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{"error": "invalid file id"})
 		return
 	}
 
-	// Check if this is a replication request
-	_ = r.Header.Get("X-Replication") == "true"
+	if vs.store == nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "store not initialized"})
+		return
+	}
 
-	// TODO: Create needle from request
-	// For now, return 501 Not Implemented
-	w.WriteHeader(http.StatusNotImplemented)
-	json.NewEncoder(w).Encode(map[string]string{"error": "not implemented yet"})
+	n, contentMD5, err := buildNeedleFromRequest(r, fid, vs.option.FileSizeLimitMB)
+	if err != nil {
+		if err == errPayloadTooLarge {
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+		} else {
+			w.WriteHeader(http.StatusBadRequest)
+		}
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	_, _, err = vs.store.WriteVolumeNeedle(fid.VolumeId, n)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	isReplication := r.Header.Get("X-Replication") == "true"
+	if !isReplication && vs.replicator != nil {
+		replicaAddrs := vs.replicaLocations.Get(fid.VolumeId)
+		filtered := make([]types.ServerAddress, 0, len(replicaAddrs))
+		selfAddr := types.ServerAddress(fmt.Sprintf("%s:%d", vs.option.Host, vs.option.Port))
+		for _, addr := range replicaAddrs {
+			if addr == selfAddr || string(addr) == vs.option.PublicUrl {
+				continue
+			}
+			filtered = append(filtered, addr)
+		}
+
+		var needleBuf bytes.Buffer
+		if _, err := n.WriteTo(&needleBuf, types.CurrentNeedleVersion); err == nil {
+			repErr := vs.replicator.ReplicatedWrite(r.Context(), replication.ReplicateRequest{
+				VolumeId:    fid.VolumeId,
+				NeedleId:    fid.NeedleId,
+				NeedleBytes: needleBuf.Bytes(),
+				JWTToken:    parseBearerToken(r.Header.Get("Authorization")),
+			}, filtered)
+			if repErr != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(map[string]string{"error": repErr.Error()})
+				return
+			}
+		}
+	}
+
+	w.Header().Set("ETag", contentMD5)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"size": len(n.Data),
+		"eTag": contentMD5,
+	})
 }
 
 // handleRead handles GET /{fid} requests.
@@ -209,23 +278,33 @@ func (vs *VolumeServer) handleRead(w http.ResponseWriter, r *http.Request) {
 
 	// Parse FileId from URL
 	path := r.URL.Path[1:] // remove leading "/"
-	_, err := types.ParseFileId(path)
+	fid, err := types.ParseFileId(path)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{"error": "invalid file id"})
 		return
 	}
 
-	// Find volume
-	_, ok := vs.store.GetVolume(0) // dummy check
-	if !ok {
+	if vs.store == nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	n, err := vs.store.ReadVolumeNeedle(fid.VolumeId, fid)
+	if err != nil {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
 
-	// TODO: Read needle and serve content
-	// For now, return 501 Not Implemented
-	w.WriteHeader(http.StatusNotImplemented)
+	mimeType := n.GetMime()
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", mimeType)
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(n.Data)))
+	w.Header().Set("ETag", fmt.Sprintf("%x", md5.Sum(n.Data)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(n.Data)
 }
 
 // handleDelete handles DELETE /{fid} requests.
@@ -245,19 +324,34 @@ func (vs *VolumeServer) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Delete needle
-	// TODO: implement delete
-	_ = err // use the variable
+	if vs.store == nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "store not initialized"})
+		return
+	}
 
-	w.WriteHeader(http.StatusNotImplemented)
-	json.NewEncoder(w).Encode(map[string]string{"error": "not implemented yet"})
+	fid, _ := types.ParseFileId(path)
+	if err := vs.store.DeleteVolumeNeedle(fid.VolumeId, fid.NeedleId); err != nil {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
 }
 
 // handleStatus handles GET /status requests.
 func (vs *VolumeServer) handleStatus(w http.ResponseWriter, r *http.Request) {
+	volumeCount := 0
+	if vs.store != nil {
+		for _, dl := range vs.store.Locations {
+			volumeCount += dl.VolumeCount()
+		}
+	}
 	status := map[string]interface{}{
 		"version": "1.0",
-		"volumes": 0,
+		"volumes": volumeCount,
 		"limit":   vs.option.FileSizeLimitMB,
 	}
 
@@ -284,18 +378,168 @@ func (vs *VolumeServer) heartbeatLoop() {
 
 // sendHeartbeat sends a heartbeat to the current master.
 func (vs *VolumeServer) sendHeartbeat() {
-	// TODO: Implement gRPC heartbeat to master
-	// For Phase 4, this is a placeholder
-	_ = vs.option.Masters // use the variable
+	if len(vs.option.Masters) == 0 {
+		return
+	}
+
+	masterAddr := vs.currentMaster
+	if masterAddr == "" {
+		masterAddr = types.ServerAddress(vs.option.Masters[0]).ToGrpcAddress()
+	}
+
+	vs.isHeartbeating.Store(true)
+	defer vs.isHeartbeating.Store(false)
+
+	dialOpt := grpc.WithTransportCredentials(insecure.NewCredentials())
+	_ = pb.WithMasterServerClient(string(masterAddr), dialOpt, func(client master_pb.MasterServiceClient) error {
+		stream, err := client.SendHeartbeat(vs.ctx)
+		if err != nil {
+			return err
+		}
+
+		hb := vs.BuildHeartbeat()
+		if err := stream.Send(hb); err != nil {
+			return err
+		}
+
+		resp, err := stream.Recv()
+		if err != nil {
+			return err
+		}
+		if resp.Leader != "" {
+			vs.masterMu.Lock()
+			vs.currentMaster = types.ServerAddress(resp.Leader).ToGrpcAddress()
+			vs.masterMu.Unlock()
+		}
+		return nil
+	})
 }
 
 // BuildHeartbeat creates a heartbeat message for the master server.
-// For Phase 4, this is a placeholder.
-func (vs *VolumeServer) BuildHeartbeat() map[string]interface{} {
-	return map[string]interface{}{
-		"ip":        vs.option.Host,
-		"port":      vs.option.Port,
-		"publicUrl": vs.option.PublicUrl,
-		"grpcPort":  vs.option.GRPCPort,
+func (vs *VolumeServer) BuildHeartbeat() *master_pb.Heartbeat {
+	volumes := make([]*master_pb.VolumeInformationMessage, 0)
+	maxCounts := make([]*master_pb.MaxVolumeCounts, 0, len(vs.option.Directories))
+	for _, d := range vs.option.Directories {
+		maxCounts = append(maxCounts, &master_pb.MaxVolumeCounts{
+			DiskType: d.DiskType,
+			MaxCount: uint32(d.MaxVolumeCount),
+		})
 	}
+	if vs.store != nil {
+		for _, dl := range vs.store.Locations {
+			for _, vid := range dl.GetVolumes() {
+				v, ok := vs.store.GetVolume(vid)
+				if !ok {
+					continue
+				}
+				volumes = append(volumes, &master_pb.VolumeInformationMessage{
+					Id:               uint32(vid),
+					Size:             uint64(v.UsedSize()),
+					Collection:       v.Collection(),
+					FileCount:        uint64(v.NeedleCount()),
+					DeleteCount:      uint64(v.DeletedCount()),
+					DeletedByteCount: v.DeletedSize(),
+					ReadOnly:         v.ReadOnly,
+					DiskType:         string(types.DefaultDiskType),
+				})
+			}
+		}
+	}
+
+	return &master_pb.Heartbeat{
+		Ip:              vs.option.Host,
+		Port:            uint32(vs.option.Port),
+		PublicUrl:       vs.option.PublicUrl,
+		GrpcPort:        uint32(vs.option.GRPCPort),
+		DataCenter:      vs.option.DataCenter,
+		Rack:            vs.option.Rack,
+		Volumes:         volumes,
+		MaxVolumeCounts: maxCounts,
+		HasNoVolumes:    len(volumes) == 0,
+	}
+}
+
+var errPayloadTooLarge = fmt.Errorf("payload too large")
+
+func buildNeedleFromRequest(r *http.Request, fid types.FileId, maxFileSizeMB int64) (*needle.Needle, string, error) {
+	limit := maxFileSizeMB * 1024 * 1024
+	if limit <= 0 {
+		limit = 4 * 1024 * 1024
+	}
+
+	data, filename, mimeType, err := readUploadPayload(r, limit)
+	if err != nil {
+		return nil, "", err
+	}
+
+	sum := md5.Sum(data)
+	n := &needle.Needle{
+		Id:       fid.NeedleId,
+		Cookie:   fid.Cookie,
+		Data:     data,
+		DataSize: uint32(len(data)),
+	}
+	if filename != "" {
+		n.SetName(filename)
+	}
+	if mimeType != "" {
+		n.SetMime(mimeType)
+	}
+	n.SetLastModified(uint64(time.Now().Unix()))
+	n.SetAppendAtNs()
+	return n, fmt.Sprintf("%x", sum), nil
+}
+
+func readUploadPayload(r *http.Request, limit int64) ([]byte, string, string, error) {
+	contentType := r.Header.Get("Content-Type")
+	if mediaType, params, err := mime.ParseMediaType(contentType); err == nil && mediaType == "multipart/form-data" {
+		mr := multipart.NewReader(r.Body, params["boundary"])
+		for {
+			part, err := mr.NextPart()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return nil, "", "", err
+			}
+			if part.FileName() == "" && part.FormName() != "file" {
+				_ = part.Close()
+				continue
+			}
+			data, readErr := io.ReadAll(io.LimitReader(part, limit+1))
+			_ = part.Close()
+			if readErr != nil {
+				return nil, "", "", readErr
+			}
+			if int64(len(data)) > limit {
+				return nil, "", "", errPayloadTooLarge
+			}
+			mimeType := part.Header.Get("Content-Type")
+			if mimeType == "" {
+				mimeType = "application/octet-stream"
+			}
+			return data, part.FileName(), mimeType, nil
+		}
+	}
+
+	data, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
+	if err != nil {
+		return nil, "", "", err
+	}
+	if int64(len(data)) > limit {
+		return nil, "", "", errPayloadTooLarge
+	}
+	mimeType := contentType
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+	return data, "", mimeType, nil
+}
+
+func parseBearerToken(header string) string {
+	const prefix = "Bearer "
+	if len(header) > len(prefix) && header[:len(prefix)] == prefix {
+		return header[len(prefix):]
+	}
+	return ""
 }

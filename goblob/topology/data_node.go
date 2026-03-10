@@ -12,22 +12,24 @@ import (
 // It contains disk information and volumes.
 type DataNode struct {
 	*NodeImpl
-	url       string
-	publicUrl string
-	ip        string
-	port      uint32
-	grpcPort  uint32
-	disks     map[types.DiskType]*DiskInfo
-	volumes   map[uint32]*master_pb.VolumeInformationMessage
-	mu        sync.RWMutex
+	url          string
+	publicUrl    string
+	ip           string
+	port         uint32
+	grpcPort     uint32
+	disks        map[types.DiskType]*DiskInfo
+	volumes      map[uint32]*master_pb.VolumeInformationMessage
+	reservations map[types.DiskType]int
+	mu           sync.RWMutex
 }
 
 // NewDataNode creates a new DataNode.
 func NewDataNode(id string) *DataNode {
 	return &DataNode{
-		NodeImpl: NewNodeImpl(id),
-		disks:    make(map[types.DiskType]*DiskInfo),
-		volumes:  make(map[uint32]*master_pb.VolumeInformationMessage),
+		NodeImpl:     NewNodeImpl(id),
+		disks:        make(map[types.DiskType]*DiskInfo),
+		volumes:      make(map[uint32]*master_pb.VolumeInformationMessage),
+		reservations: make(map[types.DiskType]int),
 	}
 }
 
@@ -161,19 +163,38 @@ func (dn *DataNode) UpdateMaxVolumeCounts(maxCounts []*master_pb.MaxVolumeCounts
 
 // AddOrUpdateVolume adds or updates a volume on this data node.
 func (dn *DataNode) AddOrUpdateVolume(volInfo *master_pb.VolumeInformationMessage) {
+	if volInfo == nil {
+		return
+	}
 	dn.mu.Lock()
 	defer dn.mu.Unlock()
 
-	dn.volumes[volInfo.Id] = volInfo
-
-	// Update disk info
-	diskType := types.DiskType(volInfo.DiskType)
-	if diskType == "" {
-		diskType = types.DefaultDiskType
+	newDiskType := types.DiskType(volInfo.DiskType)
+	if newDiskType == "" {
+		newDiskType = types.DefaultDiskType
 	}
 
-	disk := dn.getOrCreateDiskUnsafe(diskType)
-	disk.AddVolume(volInfo.Id)
+	if old, exists := dn.volumes[volInfo.Id]; exists {
+		oldDiskType := types.DiskType(old.DiskType)
+		if oldDiskType == "" {
+			oldDiskType = types.DefaultDiskType
+		}
+		if oldDiskType != newDiskType {
+			if oldDisk, ok := dn.disks[oldDiskType]; ok {
+				oldDisk.RemoveVolume(volInfo.Id)
+			}
+			newDisk := dn.getOrCreateDiskUnsafe(newDiskType)
+			newDisk.AddVolume(volInfo.Id)
+		}
+		copied := *volInfo
+		dn.volumes[volInfo.Id] = &copied
+		return
+	}
+
+	newDisk := dn.getOrCreateDiskUnsafe(newDiskType)
+	newDisk.AddVolume(volInfo.Id)
+	copied := *volInfo
+	dn.volumes[volInfo.Id] = &copied
 }
 
 // DeleteVolume removes a volume from this data node.
@@ -222,9 +243,66 @@ func (dn *DataNode) GetFreeVolumeSlots() map[types.DiskType]int {
 
 	result := make(map[types.DiskType]int)
 	for diskType, disk := range dn.disks {
-		result[diskType] = disk.GetFreeVolumeSlot()
+		free := disk.GetFreeVolumeSlot() - dn.reservations[diskType]
+		if free < 0 {
+			free = 0
+		}
+		result[diskType] = free
 	}
 	return result
+}
+
+// ReserveSlot reserves one logical slot on a disk type.
+func (dn *DataNode) ReserveSlot(diskType types.DiskType) bool {
+	dn.mu.Lock()
+	defer dn.mu.Unlock()
+
+	disk, ok := dn.disks[diskType]
+	if !ok {
+		return false
+	}
+	if disk.GetMaxVolumeCount() > 0 {
+		free := disk.GetFreeVolumeSlot() - dn.reservations[diskType]
+		if free <= 0 {
+			return false
+		}
+	}
+	dn.reservations[diskType]++
+	return true
+}
+
+// ReleaseSlot releases one logical reservation on a disk type.
+func (dn *DataNode) ReleaseSlot(diskType types.DiskType) {
+	dn.mu.Lock()
+	defer dn.mu.Unlock()
+	if dn.reservations[diskType] > 0 {
+		dn.reservations[diskType]--
+	}
+}
+
+// HasFreeSlot reports whether the given disk type can accept one more volume.
+func (dn *DataNode) HasFreeSlot(diskType types.DiskType) bool {
+	dn.mu.RLock()
+	defer dn.mu.RUnlock()
+	if diskType == types.DefaultDiskType {
+		for dt, disk := range dn.disks {
+			if disk.GetMaxVolumeCount() == 0 {
+				return true
+			}
+			if (disk.GetFreeVolumeSlot() - dn.reservations[dt]) > 0 {
+				return true
+			}
+		}
+		return false
+	}
+	disk, ok := dn.disks[diskType]
+	if !ok {
+		return false
+	}
+	if disk.GetMaxVolumeCount() == 0 {
+		return true
+	}
+	return (disk.GetFreeVolumeSlot() - dn.reservations[diskType]) > 0
 }
 
 // GetDataCenter returns the parent data center ID.
@@ -312,7 +390,7 @@ func (di *DiskInfo) GetFreeVolumeSlot() int {
 	defer di.mu.RUnlock()
 
 	if di.maxVolumeCount == 0 {
-		return 0 // No limit configured
+		return int(^uint(0) >> 1) // Unlimited
 	}
 
 	free := int(di.maxVolumeCount) - di.volumeCount
