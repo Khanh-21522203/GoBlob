@@ -132,6 +132,10 @@ func (dl *DiskLocation) HasSpace() bool {
 	if dl.maxVolumeCount > 0 && count >= dl.maxVolumeCount {
 		return false
 	}
+	// If disk size is not available (e.g., on Windows), allow space based on volume count only
+	if maxSize == 0 {
+		return true
+	}
 	const minFreeSpace = 1 * 1024 * 1024 * 1024 // 1 GB
 	free := int64(maxSize) - int64(usedSize)
 	return free >= minFreeSpace
@@ -169,6 +173,10 @@ func (dl *DiskLocation) MaxSize() uint64 {
 func (dl *DiskLocation) FreeSpace() uint64 {
 	dl.mu.RLock()
 	defer dl.mu.RUnlock()
+	// If disk size is not available (e.g., on Windows), return a reasonable default
+	if dl.maxSize == 0 {
+		return 100 * 1024 * 1024 * 1024 // 100 GB placeholder
+	}
 	if dl.maxSize <= dl.usedSize {
 		return 0
 	}

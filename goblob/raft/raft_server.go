@@ -1,154 +1,172 @@
 package raft
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/hashicorp/raft"
-	raftboltdb "github.com/hashicorp/raft-boltdb"
+	raftboltdb "github.com/hashicorp/raft-boltdb/v2"
 )
 
-// RaftServer manages the Raft consensus layer for the master server.
-type RaftServer struct {
-	cfg       *RaftConfig
-	raft      *raft.Raft
-	fsm       *MasterFSM
-	transport raft.Transport
-
-	// onLeaderChange is called when the leader status changes.
-	// IMPORTANT: This callback must not block as it's called from
-	// the Raft goroutine. Use a channel or goroutine if needed.
-	onLeaderChange func(isLeader bool)
-
-	// leaderCh tracks leader status changes.
-	leaderCh      chan bool
-	leaderChClose chan struct{}
-
-	mu sync.RWMutex
+// RaftServer is the interface the rest of the system uses to interact with Raft.
+type RaftServer interface {
+	IsLeader() bool
+	// LeaderAddress returns the gRPC address of the current leader, or "" if unknown.
+	LeaderAddress() string
+	// Apply submits a command to the Raft log and waits for consensus.
+	// Returns error if not leader or consensus times out.
+	Apply(cmd RaftCommand, timeout time.Duration) error
+	// Barrier waits until all log entries are applied to the FSM.
+	Barrier(timeout time.Duration) error
+	AddPeer(addr string) error
+	RemovePeer(addr string) error
+	Stats() map[string]string
+	Shutdown() error
 }
 
-// NewRaftServer creates a new RaftServer.
-func NewRaftServer(cfg *RaftConfig, fsm *MasterFSM, onLeaderChange func(bool)) (*RaftServer, error) {
+// raftServerImpl is the concrete implementation of RaftServer.
+type raftServerImpl struct {
+	cfg            *RaftConfig
+	raft           *raft.Raft
+	fsm            *MasterFSM
+	transport      raft.Transport
+	logStore       *raftboltdb.BoltStore
+	stableStore    *raftboltdb.BoltStore
+	onLeaderChange func(isLeader bool)
+	leaderChClose  chan struct{}
+	closeOnce      sync.Once
+}
+
+// NewRaftServer creates and starts a new Raft server.
+func NewRaftServer(cfg *RaftConfig, fsm *MasterFSM, onLeaderChange func(bool)) (RaftServer, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
-	// Create data directory if it doesn't exist
-	if err := os.MkdirAll(cfg.DataDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create data dir: %w", err)
+	if err := os.MkdirAll(cfg.MetaDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create meta dir: %w", err)
 	}
 
-	rs := &RaftServer{
-		cfg:           cfg,
-		fsm:           fsm,
+	rs := &raftServerImpl{
+		cfg:            cfg,
+		fsm:            fsm,
 		onLeaderChange: onLeaderChange,
-		leaderCh:      make(chan bool, 1),
-		leaderChClose: make(chan struct{}),
+		leaderChClose:  make(chan struct{}),
 	}
 
-	if err := rs.setupRaft(); err != nil {
-		return nil, fmt.Errorf("failed to setup raft: %w", err)
+	if err := rs.setup(); err != nil {
+		return nil, err
 	}
 
-	// Start leader observer goroutine
 	go rs.observeLeader()
-
 	return rs, nil
 }
 
-// setupRaft configures and initializes the Raft instance.
-func (rs *RaftServer) setupRaft() error {
-	// Create TCP transport
+func (rs *raftServerImpl) setup() error {
+	// Create TCP transport.
 	addr, err := net.ResolveTCPAddr("tcp", rs.cfg.BindAddr)
 	if err != nil {
-		return fmt.Errorf("failed to resolve address: %w", err)
+		return fmt.Errorf("failed to resolve bind address: %w", err)
 	}
-
 	transport, err := raft.NewTCPTransport(rs.cfg.BindAddr, addr, 3, 10*time.Second, os.Stderr)
 	if err != nil {
-		return fmt.Errorf("failed to create transport: %w", err)
+		return fmt.Errorf("failed to create TCP transport: %w", err)
 	}
 	rs.transport = transport
 
-	// Create BoltDB store for stable storage
-	// Use the same store for both log and stable storage
-	boltDB, err := raftboltdb.NewBoltStore(filepath.Join(rs.cfg.DataDir, "raft.db"))
+	// Separate BoltDB stores for log and stable state (spec requirement).
+	logStore, err := raftboltdb.NewBoltStore(filepath.Join(rs.cfg.MetaDir, "raft-log.bolt"))
 	if err != nil {
-		return fmt.Errorf("failed to create bolt store: %w", err)
+		return fmt.Errorf("failed to create log store: %w", err)
 	}
+	rs.logStore = logStore
 
-	// Create snapshot store
-	snapshots, err := raft.NewFileSnapshotStore(rs.cfg.DataDir, 1, os.Stderr)
+	stableStore, err := raftboltdb.NewBoltStore(filepath.Join(rs.cfg.MetaDir, "raft-stable.bolt"))
+	if err != nil {
+		logStore.Close()
+		return fmt.Errorf("failed to create stable store: %w", err)
+	}
+	rs.stableStore = stableStore
+
+	// Snapshot store — retain 3 snapshots.
+	snapshots, err := raft.NewFileSnapshotStore(filepath.Join(rs.cfg.MetaDir, "snapshots"), 3, os.Stderr)
 	if err != nil {
 		return fmt.Errorf("failed to create snapshot store: %w", err)
 	}
 
-	// Use BoltDB for both log and stable store
-	logStore := boltDB
-	stableStore := boltDB
-	if err != nil {
-		return fmt.Errorf("failed to create log store: %w", err)
-	}
-
-	// Create Raft configuration
+	// Build Raft configuration.
 	raftCfg := raft.DefaultConfig()
-	raftCfg.LocalID = raft.ServerID(rs.cfg.BindAddr)
+	// Use the actual bound address as LocalID so it survives port=0 tests.
+	nodeId := rs.cfg.NodeId
+	if nodeId == "" {
+		nodeId = string(transport.LocalAddr())
+	}
+	raftCfg.LocalID = raft.ServerID(nodeId)
 	raftCfg.SnapshotThreshold = rs.cfg.SnapshotThreshold
 	raftCfg.SnapshotInterval = rs.cfg.SnapshotInterval
 	raftCfg.HeartbeatTimeout = rs.cfg.HeartbeatTimeout
 	raftCfg.ElectionTimeout = rs.cfg.ElectionTimeout
 	raftCfg.LeaderLeaseTimeout = rs.cfg.LeaderLeaseTimeout
 	raftCfg.CommitTimeout = rs.cfg.CommitTimeout
-	// Use default logger (hclog)
+	if rs.cfg.MaxAppendEntries > 0 {
+		raftCfg.MaxAppendEntries = rs.cfg.MaxAppendEntries
+	}
 
-	// Bootstrap if in single-node mode
-	if rs.cfg.Bootstrap {
-		configuration := raft.Configuration{
-			Servers: []raft.Server{
-				{
-					ID:      raftCfg.LocalID,
-					Address: transport.LocalAddr(),
-				},
-			},
-		}
-		err = raft.BootstrapCluster(raftCfg, logStore, stableStore, snapshots, transport, configuration)
-		if err != nil && err != raft.ErrCantBootstrap {
+	// Bootstrap if no existing state.
+	hasState, err := raft.HasExistingState(logStore, stableStore, snapshots)
+	if err != nil {
+		return fmt.Errorf("failed to check existing state: %w", err)
+	}
+	if !hasState {
+		configuration := rs.buildBootstrapConfig(raftCfg.LocalID, transport.LocalAddr())
+		if err := raft.BootstrapCluster(raftCfg, logStore, stableStore, snapshots, transport, configuration); err != nil {
 			return fmt.Errorf("failed to bootstrap: %w", err)
 		}
 	}
 
-	// Create Raft instance
 	r, err := raft.NewRaft(raftCfg, rs.fsm, logStore, stableStore, snapshots, transport)
 	if err != nil {
 		return fmt.Errorf("failed to create raft: %w", err)
 	}
-
 	rs.raft = r
 	return nil
 }
 
-// observeLeader watches for leader changes and calls the callback.
-func (rs *RaftServer) observeLeader() {
+// buildBootstrapConfig constructs the initial cluster configuration.
+func (rs *raftServerImpl) buildBootstrapConfig(localID raft.ServerID, localAddr raft.ServerAddress) raft.Configuration {
+	if rs.cfg.SingleMode || len(rs.cfg.Peers) == 0 {
+		// Single-node: only self as voter; becomes leader immediately.
+		return raft.Configuration{
+			Servers: []raft.Server{
+				{ID: localID, Address: localAddr},
+			},
+		}
+	}
+
+	// Multi-node: all peers are voters.
+	servers := make([]raft.Server, 0, len(rs.cfg.Peers))
+	for _, peer := range rs.cfg.Peers {
+		servers = append(servers, raft.Server{
+			ID:      raft.ServerID(peer),
+			Address: raft.ServerAddress(peer),
+		})
+	}
+	return raft.Configuration{Servers: servers}
+}
+
+// observeLeader watches for leader transitions and invokes the callback.
+func (rs *raftServerImpl) observeLeader() {
 	for {
 		select {
-		case isLeader := <-rs.leaderCh:
+		case isLeader := <-rs.raft.LeaderCh():
 			if rs.onLeaderChange != nil {
-				// Call in goroutine to avoid blocking Raft
+				// Run in a goroutine so we never block Raft's internal goroutine.
 				go rs.onLeaderChange(isLeader)
-			}
-		case <-rs.raft.LeaderCh():
-			// Raft leader change detected
-			isLeader := rs.IsLeader()
-			select {
-			case rs.leaderCh <- isLeader:
-			default:
-				// Channel already has a pending update
 			}
 		case <-rs.leaderChClose:
 			return
@@ -156,138 +174,93 @@ func (rs *RaftServer) observeLeader() {
 	}
 }
 
-// IsLeader returns true if this node is the Raft leader.
-func (rs *RaftServer) IsLeader() bool {
-	rs.mu.RLock()
-	defer rs.mu.RUnlock()
+// IsLeader returns true if this node is the current Raft leader.
+func (rs *raftServerImpl) IsLeader() bool {
 	return rs.raft.State() == raft.Leader
 }
 
 // LeaderAddress returns the address of the current cluster leader.
-func (rs *RaftServer) LeaderAddress() string {
-	rs.mu.RLock()
-	defer rs.mu.RUnlock()
-	addr := string(rs.raft.Leader())
-	if addr == "" {
-		return ""
-	}
-	return addr
+func (rs *raftServerImpl) LeaderAddress() string {
+	addr, _ := rs.raft.LeaderWithID()
+	return string(addr)
 }
 
-// ApplyCommand applies a command to the Raft log.
-// This method should only be called on the leader.
-func (rs *RaftServer) ApplyCommand(ctx context.Context, cmd *LogCommand) error {
+// Apply submits a command to the Raft log and waits for consensus.
+func (rs *raftServerImpl) Apply(cmd RaftCommand, timeout time.Duration) error {
 	if !rs.IsLeader() {
 		return fmt.Errorf("not leader, current leader: %s", rs.LeaderAddress())
 	}
 
-	data, err := cmd.Marshal()
+	data, err := encodeLogEntry(cmd)
 	if err != nil {
-		return fmt.Errorf("failed to marshal command: %w", err)
+		return fmt.Errorf("failed to encode command: %w", err)
 	}
 
-	future := rs.raft.Apply(data, 0)
-
-	// Create a channel to receive the error
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- future.Error()
-	}()
-
-	select {
-	case err := <-errCh:
-		if err != nil {
-			return fmt.Errorf("failed to apply command: %w", err)
-		}
-		// Also check FSM response for errors
-		response := future.Response()
-		if response != nil {
-			if err, ok := response.(error); ok && err != nil {
-				return fmt.Errorf("fsm returned error: %w", err)
-			}
-		}
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-// GetMaxFileId returns the current maximum file ID from the FSM.
-func (rs *RaftServer) GetMaxFileId() uint64 {
-	return rs.fsm.GetMaxFileId()
-}
-
-// AddVoter adds a voting node to the Raft cluster.
-func (rs *RaftServer) AddVoter(id, address string) error {
-	future := rs.raft.AddVoter(raft.ServerID(id), raft.ServerAddress(address), 0, 0)
+	future := rs.raft.Apply(data, timeout)
 	if err := future.Error(); err != nil {
-		return fmt.Errorf("failed to add voter: %w", err)
+		return fmt.Errorf("failed to apply command: %w", err)
+	}
+	if resp := future.Response(); resp != nil {
+		if respErr, ok := resp.(error); ok && respErr != nil {
+			return fmt.Errorf("fsm returned error: %w", respErr)
+		}
 	}
 	return nil
 }
 
-// RemoveServer removes a server from the Raft cluster.
-func (rs *RaftServer) RemoveServer(id string) error {
-	future := rs.raft.RemoveServer(raft.ServerID(id), 0, 0)
-	if err := future.Error(); err != nil {
-		return fmt.Errorf("failed to remove server: %w", err)
-	}
-	return nil
+// Barrier waits until all log entries up to this point are applied to the FSM.
+func (rs *raftServerImpl) Barrier(timeout time.Duration) error {
+	future := rs.raft.Barrier(timeout)
+	return future.Error()
 }
 
-// Shutdown gracefully shuts down the Raft server.
-func (rs *RaftServer) Shutdown() error {
-	close(rs.leaderChClose)
+// AddPeer adds a voting node to the Raft cluster.
+func (rs *raftServerImpl) AddPeer(addr string) error {
+	future := rs.raft.AddVoter(raft.ServerID(addr), raft.ServerAddress(addr), 0, 0)
+	return future.Error()
+}
 
+// RemovePeer removes a node from the Raft cluster.
+func (rs *raftServerImpl) RemovePeer(addr string) error {
+	future := rs.raft.RemoveServer(raft.ServerID(addr), 0, 0)
+	return future.Error()
+}
+
+// Stats returns Raft runtime statistics.
+func (rs *raftServerImpl) Stats() map[string]string {
+	return rs.raft.Stats()
+}
+
+// Shutdown gracefully shuts down the Raft server and closes all stores.
+func (rs *raftServerImpl) Shutdown() error {
+	rs.closeOnce.Do(func() { close(rs.leaderChClose) })
+	var firstErr error
 	if rs.raft != nil {
-		future := rs.raft.Shutdown()
-		if err := future.Error(); err != nil {
-			return fmt.Errorf("failed to shutdown raft: %w", err)
+		if err := rs.raft.Shutdown().Error(); err != nil {
+			firstErr = err
 		}
 	}
-
-	// Note: Transport is closed by Raft itself during shutdown
-
-	return nil
-}
-
-// State returns the current Raft state.
-func (rs *RaftServer) State() raft.RaftState {
-	rs.mu.RLock()
-	defer rs.mu.RUnlock()
-	if rs.raft == nil {
-		return raft.Shutdown
+	// Close bolt stores after raft is shut down so file locks are released.
+	if rs.logStore != nil {
+		rs.logStore.Close()
 	}
-	return rs.raft.State()
-}
-
-// Marshal converts the LogCommand to JSON.
-func (cmd *LogCommand) Marshal() ([]byte, error) {
-	// Wrap to handle any data type
-	wrapped := struct {
-		Type LogCommandType `json:"type"`
-		Data any            `json:"data"`
-	}{
-		Type: cmd.Type,
-		Data: cmd.Data,
+	if rs.stableStore != nil {
+		rs.stableStore.Close()
 	}
-	return jsonEncode(wrapped)
+	return firstErr
 }
 
-// UnmarshalLogCommand creates a LogCommand from JSON data.
-func UnmarshalLogCommand(data []byte) (*LogCommand, error) {
-	var cmd LogCommand
-	if err := jsonDecode(data, &cmd); err != nil {
-		return nil, err
+// RedirectToLeader redirects an HTTP request to the current Raft leader.
+// Returns true if the request was redirected (caller should stop processing).
+func RedirectToLeader(rs RaftServer, w http.ResponseWriter, r *http.Request) bool {
+	if rs.IsLeader() {
+		return false
 	}
-	return &cmd, nil
-}
-
-// Simple JSON helpers
-func jsonEncode(v any) ([]byte, error) {
-	return json.Marshal(v)
-}
-
-func jsonDecode(data []byte, v any) error {
-	return json.Unmarshal(data, v)
+	leaderAddr := rs.LeaderAddress()
+	if leaderAddr == "" {
+		http.Error(w, "no leader elected", http.StatusServiceUnavailable)
+		return true
+	}
+	http.Redirect(w, r, "http://"+leaderAddr+r.RequestURI, http.StatusTemporaryRedirect)
+	return true
 }

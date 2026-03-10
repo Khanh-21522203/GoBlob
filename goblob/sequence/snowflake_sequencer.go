@@ -1,25 +1,19 @@
 package sequence
 
 import (
-	"context"
 	"fmt"
 	"sync"
 	"time"
 )
 
 // SnowflakeSequencer is a coordination-free ID generator inspired by Twitter's Snowflake.
-// It generates unique IDs without any coordination by using:
-// - Timestamp (milliseconds since epoch)
-// - Node ID (configured per instance)
-// - Sequence number (for same-millisecond collisions)
+// It generates unique IDs without any coordination by combining:
+//   - 41 bits: timestamp (milliseconds since custom epoch, ~69 years)
+//   - 10 bits: node ID (0–1023)
+//   - 12 bits: sequence (4096 IDs per millisecond per node)
 //
-// ID structure: 63 bits total
-// - 41 bits: timestamp (milliseconds since custom epoch, supports ~69 years)
-// - 10 bits: node ID (supports up to 1024 nodes)
-// - 12 bits: sequence (supports up to 4096 IDs per millisecond per node)
-//
-// Note: IDs are NOT guaranteed to be strictly monotonically increasing across
-// the cluster, but they are unique. This is acceptable for some use cases.
+// IDs are NOT strictly monotonically increasing across the cluster, but they
+// are unique per node. This is acceptable when cross-node monotonicity is not required.
 type SnowflakeSequencer struct {
 	mu          sync.Mutex
 	nodeId      uint64
@@ -39,7 +33,7 @@ const (
 
 // SnowflakeConfig holds configuration for SnowflakeSequencer.
 type SnowflakeConfig struct {
-	// NodeId is the unique identifier for this node (0-1023).
+	// NodeId is the unique identifier for this node (0–1023).
 	NodeId uint64
 
 	// Epoch is the custom epoch time. Defaults to 2024-01-01 00:00:00 UTC.
@@ -57,9 +51,8 @@ func DefaultSnowflakeConfig() *SnowflakeConfig {
 // NewSnowflakeSequencer creates a new SnowflakeSequencer.
 func NewSnowflakeSequencer(cfg *SnowflakeConfig) (*SnowflakeSequencer, error) {
 	if cfg.NodeId > 1023 {
-		return nil, fmt.Errorf("node_id must be between 0 and 1023")
+		return nil, fmt.Errorf("node_id must be between 0 and 1023, got %d", cfg.NodeId)
 	}
-
 	return &SnowflakeSequencer{
 		nodeId:      cfg.NodeId,
 		epoch:       cfg.Epoch,
@@ -69,18 +62,19 @@ func NewSnowflakeSequencer(cfg *SnowflakeConfig) (*SnowflakeSequencer, error) {
 	}, nil
 }
 
-// NextFileId returns the next unique file ID.
-func (s *SnowflakeSequencer) NextFileId(ctx context.Context) (uint64, error) {
+// NextFileId returns the start of a batch of unique IDs.
+// For Snowflake, each call generates one ID regardless of count,
+// since IDs embed a timestamp and are not pre-allocated.
+func (s *SnowflakeSequencer) NextFileId(count uint64) uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	now := s.currentTime()
 
 	if now == s.lastTime {
-		// Same millisecond - increment sequence
 		s.sequence++
 		if s.sequence > s.maxSequence {
-			// Sequence overflow - wait for next millisecond
+			// Sequence overflow — spin until the next millisecond.
 			for now <= s.lastTime {
 				time.Sleep(100 * time.Microsecond)
 				now = s.currentTime()
@@ -88,12 +82,10 @@ func (s *SnowflakeSequencer) NextFileId(ctx context.Context) (uint64, error) {
 			s.sequence = 0
 		}
 	} else if now > s.lastTime {
-		// New millisecond - reset sequence
 		s.sequence = 0
 		s.lastTime = now
 	} else {
-		// Clock moved backward - this is problematic
-		// Wait until we catch up
+		// Clock moved backward — wait to catch up.
 		for now < s.lastTime {
 			time.Sleep(100 * time.Microsecond)
 			now = s.currentTime()
@@ -102,31 +94,23 @@ func (s *SnowflakeSequencer) NextFileId(ctx context.Context) (uint64, error) {
 		s.lastTime = now
 	}
 
-	// Generate ID: timestamp | node_id | sequence
-	id := (now << s.timeShift) | (s.nodeId << s.nodeIdShift) | s.sequence
-
-	return id, nil
+	return (now << s.timeShift) | (s.nodeId << s.nodeIdShift) | s.sequence
 }
 
-// GetMaxFileId returns the approximate maximum file ID generated.
-// Note: This is an approximation since we don't track every ID.
-func (s *SnowflakeSequencer) GetMaxFileId() uint64 {
+// SetMax is a no-op for SnowflakeSequencer because IDs are time-based.
+func (s *SnowflakeSequencer) SetMax(_ uint64) {}
+
+// GetMax returns the approximate maximum ID generated so far.
+func (s *SnowflakeSequencer) GetMax() uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	now := s.currentTime()
-	if now == s.lastTime {
-		return (now << s.timeShift) | (s.nodeId << s.nodeIdShift) | s.sequence
-	}
 	return (s.lastTime << s.timeShift) | (s.nodeId << s.nodeIdShift) | s.sequence
 }
 
-// Close gracefully shuts down the sequencer.
-func (s *SnowflakeSequencer) Close() error {
-	return nil
-}
+// Close is a no-op for SnowflakeSequencer.
+func (s *SnowflakeSequencer) Close() error { return nil }
 
-// currentTime returns the current time in milliseconds since the custom epoch.
+// currentTime returns milliseconds since the custom epoch.
 func (s *SnowflakeSequencer) currentTime() uint64 {
 	return uint64(time.Since(s.epoch).Milliseconds())
 }

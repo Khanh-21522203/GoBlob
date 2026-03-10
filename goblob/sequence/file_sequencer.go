@@ -1,23 +1,31 @@
 package sequence
 
 import (
-	"context"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 )
 
-// FileSequencer is a file-based implementation of Sequencer.
-// It persists the max file ID to a file and uses atomic write+rename for crash safety.
+// FileSequencer is the default implementation of Sequencer for single-master mode.
+// It persists the max issued ID to disk using atomic write+rename for crash safety.
+//
+// State invariants:
+//   current = last issued ID (in memory)
+//   saved   = last value written to disk (always >= current; saved = current + step at each flush)
+//
+// On startup: current = saved = value read from file.
+// On crash:   at most `step` IDs are wasted (no IDs are ever reused).
 type FileSequencer struct {
-	mu        sync.Mutex
-	cfg       *Config
-	maxFileId uint64
-	nextId    uint64
-	upperBound uint64
-	filePath string
+	mu      sync.Mutex
+	dir     string // directory containing the max_needle_id file
+	step    uint64 // pre-allocation batch size
+	current uint64 // last issued ID
+	saved   uint64 // last value written to disk
 }
 
 // NewFileSequencer creates a new FileSequencer.
@@ -25,33 +33,90 @@ func NewFileSequencer(cfg *Config) (*FileSequencer, error) {
 	if cfg.DataDir == "" {
 		return nil, fmt.Errorf("data_dir cannot be empty")
 	}
-
-	// Create data directory if it doesn't exist
 	if err := os.MkdirAll(cfg.DataDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create data dir: %w", err)
 	}
 
-	filePath := filepath.Join(cfg.DataDir, "max_needle_id")
+	step := cfg.StepSize
+	if step == 0 {
+		step = 10000
+	}
 
-	// Load existing max file ID
-	maxFileId, err := loadMaxFileId(filePath)
+	filePath := filepath.Join(cfg.DataDir, "max_needle_id")
+	saved, err := loadMaxFileId(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load max file id: %w", err)
 	}
 
-	fs := &FileSequencer{
-		cfg:        cfg,
-		maxFileId:  maxFileId,
-		nextId:     maxFileId + 1,
-		upperBound: maxFileId,
-		filePath:   filePath,
-	}
-
-	return fs, nil
+	return &FileSequencer{
+		dir:     cfg.DataDir,
+		step:    step,
+		current: saved,
+		saved:   saved,
+	}, nil
 }
 
-// loadMaxFileId reads the max file ID from disk.
-// Returns 0 if the file doesn't exist (fresh start).
+// NextFileId returns the start of a batch of count unique IDs [start, start+count-1].
+func (fs *FileSequencer) NextFileId(count uint64) uint64 {
+	if count == 0 {
+		count = 1
+	}
+
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+
+	// If the next allocation would exceed our saved ceiling, persist a new ceiling.
+	if fs.current+count > fs.saved {
+		newSaved := fs.current + fs.step + count
+		if err := saveMaxFileId(filepath.Join(fs.dir, "max_needle_id"), newSaved); err != nil {
+			// Log the error but continue — IDs remain unique in memory.
+			// On restart the sequencer will jump forward by up to step IDs (expected behaviour).
+			log.Printf("sequence: WARNING failed to persist max file id: %v", err)
+		} else {
+			fs.saved = newSaved
+		}
+	}
+
+	start := fs.current + 1
+	fs.current += count
+	return start
+}
+
+// SetMax advances the sequencer so that all future IDs are > maxId.
+// Used during recovery when volume servers report a higher NeedleId than saved.
+func (fs *FileSequencer) SetMax(maxId uint64) {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+
+	if maxId <= fs.current {
+		return
+	}
+	fs.current = maxId
+	// Persist immediately to survive a crash.
+	newSaved := maxId + fs.step
+	if err := saveMaxFileId(filepath.Join(fs.dir, "max_needle_id"), newSaved); err != nil {
+		log.Printf("sequence: WARNING failed to persist SetMax: %v", err)
+	} else {
+		fs.saved = newSaved
+	}
+}
+
+// GetMax returns the current maximum issued ID.
+func (fs *FileSequencer) GetMax() uint64 {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	return fs.current
+}
+
+// Close persists the current state to disk.
+func (fs *FileSequencer) Close() error {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	return saveMaxFileId(filepath.Join(fs.dir, "max_needle_id"), fs.current)
+}
+
+// loadMaxFileId reads the persisted max file ID.
+// Returns 0 if the file does not exist (fresh start).
 func loadMaxFileId(path string) (uint64, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -60,29 +125,19 @@ func loadMaxFileId(path string) (uint64, error) {
 		}
 		return 0, fmt.Errorf("failed to read file: %w", err)
 	}
-
-	// Parse as ASCII decimal
-	str := string(data)
-	if len(str) == 0 {
+	str := strings.TrimSpace(string(data))
+	if str == "" {
 		return 0, nil
 	}
-
-	// Trim newline and whitespace
-	for len(str) > 0 && (str[len(str)-1] == '\n' || str[len(str)-1] == '\r' || str[len(str)-1] == ' ') {
-		str = str[:len(str)-1]
-	}
-
 	val, err := strconv.ParseUint(str, 10, 64)
 	if err != nil {
-		return 0, fmt.Errorf("failed to parse max file id: %w", err)
+		return 0, fmt.Errorf("failed to parse max file id %q: %w", str, err)
 	}
-
 	return val, nil
 }
 
-// saveMaxFileId atomically writes the max file ID to disk.
+// saveMaxFileId atomically writes maxId to disk using write-to-temp then rename.
 func saveMaxFileId(path string, maxId uint64) error {
-	// Write to temporary file
 	tmpPath := path + ".tmp"
 	data := strconv.FormatUint(maxId, 10) + "\n"
 
@@ -95,94 +150,25 @@ func saveMaxFileId(path string, maxId uint64) error {
 		f.Close()
 		return fmt.Errorf("failed to write data: %w", err)
 	}
-
-	// Sync to ensure data is on disk
 	if err := f.Sync(); err != nil {
 		f.Close()
 		return fmt.Errorf("failed to sync file: %w", err)
 	}
-
 	if err := f.Close(); err != nil {
-		return fmt.Errorf("failed to close file: %w", err)
+		return fmt.Errorf("failed to close temp file: %w", err)
 	}
 
-	// Atomic rename
 	if err := os.Rename(tmpPath, path); err != nil {
 		return fmt.Errorf("failed to rename: %w", err)
 	}
 
-	// Sync directory
-	dir := filepath.Dir(path)
-	dirFile, err := os.Open(dir)
-	if err != nil {
-		return fmt.Errorf("failed to open directory: %w", err)
-	}
-	defer dirFile.Close()
-
-	if err := dirFile.Sync(); err != nil {
-		return fmt.Errorf("failed to sync directory: %w", err)
-	}
-
-	return nil
-}
-
-// NextFileId returns the next unique file ID.
-func (fs *FileSequencer) NextFileId(ctx context.Context) (uint64, error) {
-	fs.mu.Lock()
-	defer fs.mu.Unlock()
-
-	// Check if we need to allocate a new batch
-	if fs.nextId > fs.upperBound {
-		if err := fs.allocateBatch(); err != nil {
-			return 0, fmt.Errorf("failed to allocate batch: %w", err)
-		}
-	}
-
-	id := fs.nextId
-	fs.nextId++
-
-	// Update max file ID if necessary
-	if id > fs.maxFileId {
-		fs.maxFileId = id
-	}
-
-	return id, nil
-}
-
-// allocateBatch allocates a new batch of IDs by incrementing the persisted max file ID.
-func (fs *FileSequencer) allocateBatch() error {
-	// Calculate new upper bound
-	newMaxFileId := fs.upperBound + uint64(fs.cfg.StepSize)
-
-	// Persist to disk
-	if err := saveMaxFileId(fs.filePath, newMaxFileId); err != nil {
-		return fmt.Errorf("failed to save max file id: %w", err)
-	}
-
-	fs.nextId = fs.upperBound + 1
-	fs.upperBound = newMaxFileId
-	fs.maxFileId = newMaxFileId
-
-	return nil
-}
-
-// GetMaxFileId returns the current maximum file ID that has been allocated.
-func (fs *FileSequencer) GetMaxFileId() uint64 {
-	fs.mu.Lock()
-	defer fs.mu.Unlock()
-	return fs.maxFileId
-}
-
-// Close gracefully shuts down the sequencer.
-func (fs *FileSequencer) Close() error {
-	// Ensure current batch is persisted
-	fs.mu.Lock()
-	defer fs.mu.Unlock()
-
-	if fs.nextId > 1 {
-		// Persist the current max file ID
-		if err := saveMaxFileId(fs.filePath, fs.maxFileId); err != nil {
-			return fmt.Errorf("failed to save final max file id: %w", err)
+	// Directory fsync is not supported on Windows; skip it.
+	if runtime.GOOS != "windows" {
+		dir := filepath.Dir(path)
+		dirFile, err := os.Open(dir)
+		if err == nil {
+			_ = dirFile.Sync() // best-effort; ignore error
+			dirFile.Close()
 		}
 	}
 

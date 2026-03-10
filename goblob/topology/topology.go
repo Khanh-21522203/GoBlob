@@ -107,10 +107,11 @@ func (t *Topology) processVolume(dataNode *DataNode, volInfo *master_pb.VolumeIn
 	// Get or create volume layout
 	vl := t.volumeLayouts.GetOrCreate(collection, replication, ttl, types.DiskType(diskType))
 
-	// Add volume to the layout
+	// Add volume to the layout, preserving the readonly flag from the heartbeat.
 	vl.AddVolumeLayout(&VolumeLocation{
-		DataNode: dataNode,
-		VolumeId: volInfo.Id,
+		DataNode:   dataNode,
+		VolumeId:   volInfo.Id,
+		isReadOnly: volInfo.ReadOnly,
 	})
 
 	// Update the data node's disk info
@@ -142,7 +143,7 @@ func (t *Topology) LookupVolumeLocation(vid uint32) []*master_pb.VolumeLocation 
 // AllocateVolumeCandidates finds candidate data nodes for allocating a new volume.
 func (t *Topology) AllocateVolumeCandidates(collection string, replicaPlacement types.ReplicaPlacement, ttl string, diskType types.DiskType) ([]*DataNode, error) {
 	t.mu.RLock()
-	defer t.mu.Unlock()
+	defer t.mu.RUnlock()
 
 	replication := replicaPlacement.String()
 	vl := t.volumeLayouts.Get(collection, replication, ttl, diskType)

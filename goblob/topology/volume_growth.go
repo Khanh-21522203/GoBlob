@@ -104,18 +104,18 @@ func (vg *VolumeGrowth) CheckAndGrow(ctx context.Context, collection string, rep
 	return created, nil
 }
 
-// shouldGrowVolumes returns true if volumes should be grown based on threshold.
+// shouldGrowVolumes returns true if the writable volume ratio falls below 90%.
+// Per spec: trigger growth when writableCount < 0.9 * totalCount.
 func (vg *VolumeGrowth) shouldGrowVolumes(volumeLayout *VolumeLayout) bool {
 	writableCount := volumeLayout.GetWritableVolumeCount()
 	totalCount := volumeLayout.GetTotalVolumeCount()
 
-	// Grow if we have less than 10% free writable volumes
 	if totalCount == 0 {
 		return true
 	}
 
-	freeRatio := float64(writableCount) / float64(totalCount)
-	return freeRatio < 0.1
+	writableRatio := float64(writableCount) / float64(totalCount)
+	return writableRatio < 0.9
 }
 
 // CapacityReservation represents a reserved slot for a new volume.

@@ -49,18 +49,32 @@ func NewClusterRegistry() *ClusterRegistry {
 	return cr
 }
 
-// Register registers a node from a KeepConnected request.
+// Register adds or updates a node registration from a KeepConnected request.
+// If the node already exists, only lastSeen is updated (other fields are refreshed too).
 func (cr *ClusterRegistry) Register(req *master_pb.KeepConnectedRequest) (*ClusterNode, error) {
 	if req == nil {
 		return nil, fmt.Errorf("keep connected request is nil")
 	}
 
+	nodeId := req.GetClientAddress()
+
 	cr.mu.Lock()
 	defer cr.mu.Unlock()
 
-	nodeId := req.GetClientAddress()
+	if existing, ok := cr.nodes[nodeId]; ok {
+		// Update mutable fields without replacing the object.
+		existing.mu.Lock()
+		existing.clientType = req.GetClientType()
+		existing.version = req.GetVersion()
+		existing.filerGroup = req.GetFilerGroup()
+		existing.dataCenter = req.GetDataCenter()
+		existing.rack = req.GetRack()
+		existing.grpcPort = req.GetGrpcPort()
+		existing.lastSeen = time.Now()
+		existing.mu.Unlock()
+		return existing, nil
+	}
 
-	// Create or update node
 	node := &ClusterNode{
 		id:            nodeId,
 		clientType:    req.GetClientType(),
@@ -72,9 +86,7 @@ func (cr *ClusterRegistry) Register(req *master_pb.KeepConnectedRequest) (*Clust
 		grpcPort:      req.GetGrpcPort(),
 		lastSeen:      time.Now(),
 	}
-
 	cr.nodes[nodeId] = node
-
 	return node, nil
 }
 
@@ -105,6 +117,21 @@ func (cr *ClusterRegistry) GetNode(nodeId string) (*ClusterNode, bool) {
 
 	node, ok := cr.nodes[nodeId]
 	return node, ok
+}
+
+// ListNodes returns all registered nodes, optionally filtered by clientType.
+// Pass an empty string to return all nodes.
+func (cr *ClusterRegistry) ListNodes(clientType string) []*ClusterNode {
+	cr.mu.RLock()
+	defer cr.mu.RUnlock()
+
+	var result []*ClusterNode
+	for _, node := range cr.nodes {
+		if clientType == "" || node.clientType == clientType {
+			result = append(result, node)
+		}
+	}
+	return result
 }
 
 // ForEachNode iterates over all nodes.

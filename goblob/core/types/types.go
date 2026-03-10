@@ -150,6 +150,33 @@ func (rp ReplicaPlacement) String() string {
 	return fmt.Sprintf("%d%d%d", rp.DifferentDataCenterCount, rp.DifferentRackCount, rp.SameRackCount)
 }
 
+// ParseReplicaPlacementString parses a 3-digit string like "000" or "021" into a ReplicaPlacement.
+// Each digit represents: different DC count, different rack count, same rack count.
+func ParseReplicaPlacementString(s string) ReplicaPlacement {
+	if len(s) < 3 {
+		return ReplicaPlacement{}
+	}
+	dc := uint8(0)
+	rack := uint8(0)
+	sameRack := uint8(0)
+
+	if s[0] >= '0' && s[0] <= '9' {
+		dc = uint8(s[0] - '0')
+	}
+	if len(s) > 1 && s[1] >= '0' && s[1] <= '9' {
+		rack = uint8(s[1] - '0')
+	}
+	if len(s) > 2 && s[2] >= '0' && s[2] <= '9' {
+		sameRack = uint8(s[2] - '0')
+	}
+
+	return ReplicaPlacement{
+		DifferentDataCenterCount: dc,
+		DifferentRackCount:       rack,
+		SameRackCount:            sameRack,
+	}
+}
+
 // TTL with exact 2-byte wire format
 
 type TTLUnit byte

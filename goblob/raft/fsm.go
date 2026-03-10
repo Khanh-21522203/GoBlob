@@ -4,152 +4,216 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"sync"
 
 	"github.com/hashicorp/raft"
 )
 
-// LogCommandType represents different types of Raft log commands.
-type LogCommandType string
-
-const (
-	// CommandSetMaxFileId sets the maximum file ID (needle ID).
-	CommandSetMaxFileId LogCommandType = "set_max_file_id"
-	// CommandRegisterVolume registers a volume in the cluster.
-	CommandRegisterVolume LogCommandType = "register_volume"
-	// CommandUnregisterVolume unregisters a volume from the cluster.
-	CommandUnregisterVolume LogCommandType = "unregister_volume"
-)
-
-// LogCommand is a command that gets replicated via Raft.
-type LogCommand struct {
-	Type LogCommandType `json:"type"`
-	Data any            `json:"data"`
+// RaftCommand is a command that can be submitted to the Raft log.
+type RaftCommand interface {
+	Type() string
+	Encode() ([]byte, error)
 }
 
-// SetMaxFileIdData is the data for CommandSetMaxFileId.
-type SetMaxFileIdData struct {
+// MaxFileIdCommand advances the sequencer's max file ID.
+// Applied whenever the master issues a batch of file IDs.
+type MaxFileIdCommand struct {
 	MaxFileId uint64 `json:"max_file_id"`
 }
 
-// RegisterVolumeData is the data for CommandRegisterVolume.
-type RegisterVolumeData struct {
-	VolumeId uint32 `json:"volume_id"`
-	DataNode string `json:"data_node"`
+func (c MaxFileIdCommand) Type() string             { return "max_file_id" }
+func (c MaxFileIdCommand) Encode() ([]byte, error)  { return json.Marshal(c) }
+
+// MaxVolumeIdCommand records the highest VolumeId ever allocated.
+type MaxVolumeIdCommand struct {
+	MaxVolumeId uint32 `json:"max_volume_id"`
 }
 
-// UnregisterVolumeData is the data for CommandUnregisterVolume.
-type UnregisterVolumeData struct {
-	VolumeId uint32 `json:"volume_id"`
+func (c MaxVolumeIdCommand) Type() string             { return "max_volume_id" }
+func (c MaxVolumeIdCommand) Encode() ([]byte, error)  { return json.Marshal(c) }
+
+// TopologyIdCommand sets the cluster's unique identity (UUID).
+type TopologyIdCommand struct {
+	TopologyId string `json:"topology_id"`
+}
+
+func (c TopologyIdCommand) Type() string             { return "topology_id" }
+func (c TopologyIdCommand) Encode() ([]byte, error)  { return json.Marshal(c) }
+
+// LogEntry wraps a command with type info for the FSM.
+type LogEntry struct {
+	Type    string          `json:"type"`
+	Payload json.RawMessage `json:"payload"`
 }
 
 // MasterFSM implements the raft.FSM interface for the master server.
 // It maintains the cluster's replicated state.
 type MasterFSM struct {
-	mu        sync.RWMutex
-	maxFileId uint64
-	// TODO: Add volume registry, topology state, etc.
+	mu          sync.Mutex
+	maxFileId   uint64
+	maxVolumeId uint32
+	topologyId  string
+
+	// Callbacks invoked after each Apply (on leader and followers alike).
+	// These must not block — they are called while the FSM lock is held.
+	onMaxFileIdUpdate   func(uint64)
+	onMaxVolumeIdUpdate func(uint32)
+	onTopologyIdSet     func(string)
 }
 
-// NewMasterFSM creates a new MasterFSM.
-func NewMasterFSM() *MasterFSM {
-	return &MasterFSM{}
+// NewMasterFSM creates a new MasterFSM with the given state-change callbacks.
+// Callbacks are invoked after each log entry is applied; pass nil to skip.
+func NewMasterFSM(
+	onMaxFileIdUpdate func(uint64),
+	onMaxVolumeIdUpdate func(uint32),
+	onTopologyIdSet func(string),
+) *MasterFSM {
+	return &MasterFSM{
+		onMaxFileIdUpdate:   onMaxFileIdUpdate,
+		onMaxVolumeIdUpdate: onMaxVolumeIdUpdate,
+		onTopologyIdSet:     onTopologyIdSet,
+	}
 }
 
-// Apply applies a Raft log entry to the finite state machine.
-// This is called when a log entry is committed.
+// Apply is called by the Raft library for every committed log entry.
 func (m *MasterFSM) Apply(log *raft.Log) interface{} {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	var cmd LogCommand
-	if err := json.Unmarshal(log.Data, &cmd); err != nil {
-		return fmt.Errorf("failed to unmarshal command: %w", err)
+	var entry LogEntry
+	if err := json.Unmarshal(log.Data, &entry); err != nil {
+		return fmt.Errorf("failed to unmarshal log entry: %w", err)
 	}
 
-	switch cmd.Type {
-	case CommandSetMaxFileId:
-		data, ok := cmd.Data.(map[string]any)
-		if !ok {
-			return fmt.Errorf("invalid data type for set_max_file_id")
+	switch entry.Type {
+	case "max_file_id":
+		var cmd MaxFileIdCommand
+		if err := json.Unmarshal(entry.Payload, &cmd); err != nil {
+			return fmt.Errorf("failed to unmarshal max_file_id: %w", err)
 		}
-		maxFileIdFloat, ok := data["max_file_id"].(float64)
-		if !ok {
-			return fmt.Errorf("invalid max_file_id type")
+		if cmd.MaxFileId > m.maxFileId {
+			m.maxFileId = cmd.MaxFileId
+			if m.onMaxFileIdUpdate != nil {
+				m.onMaxFileIdUpdate(m.maxFileId)
+			}
 		}
-		maxFileId := uint64(maxFileIdFloat)
-		if maxFileId > m.maxFileId {
-			m.maxFileId = maxFileId
-		}
-		return nil
 
-	case CommandRegisterVolume:
-		// TODO: Implement volume registration
-		return nil
+	case "max_volume_id":
+		var cmd MaxVolumeIdCommand
+		if err := json.Unmarshal(entry.Payload, &cmd); err != nil {
+			return fmt.Errorf("failed to unmarshal max_volume_id: %w", err)
+		}
+		if cmd.MaxVolumeId > m.maxVolumeId {
+			m.maxVolumeId = cmd.MaxVolumeId
+			if m.onMaxVolumeIdUpdate != nil {
+				m.onMaxVolumeIdUpdate(m.maxVolumeId)
+			}
+		}
 
-	case CommandUnregisterVolume:
-		// TODO: Implement volume unregistration
-		return nil
+	case "topology_id":
+		var cmd TopologyIdCommand
+		if err := json.Unmarshal(entry.Payload, &cmd); err != nil {
+			return fmt.Errorf("failed to unmarshal topology_id: %w", err)
+		}
+		m.topologyId = cmd.TopologyId
+		if m.onTopologyIdSet != nil {
+			m.onTopologyIdSet(m.topologyId)
+		}
 
 	default:
-		return fmt.Errorf("unknown command type: %s", cmd.Type)
+		return fmt.Errorf("unknown command type: %s", entry.Type)
 	}
+
+	return nil
 }
 
-// Snapshot is used to support log compaction. This method should
-// return an FSMSnapshot that can be used to save a point-in-time
-// snapshot of the FSM.
+// Snapshot creates a point-in-time snapshot of FSM state.
 func (m *MasterFSM) Snapshot() (raft.FSMSnapshot, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	m.mu.Lock()
+	state := fsmState{
+		MaxFileId:   m.maxFileId,
+		MaxVolumeId: m.maxVolumeId,
+		TopologyId:  m.topologyId,
+	}
+	m.mu.Unlock()
 
-	return &masterFSMSnapshot{
-		maxFileId: m.maxFileId,
-	}, nil
+	data, err := json.Marshal(state)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal snapshot: %w", err)
+	}
+	return &masterFSMSnapshot{data: data}, nil
 }
 
-// Restore is used to restore an FSM from a snapshot.
+// Restore applies a snapshot, replacing all current FSM state.
 func (m *MasterFSM) Restore(rc io.ReadCloser) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	defer rc.Close()
 
-	var snapshot struct {
-		MaxFileId uint64 `json:"max_file_id"`
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		return fmt.Errorf("failed to read snapshot: %w", err)
 	}
 
-	if err := json.NewDecoder(rc).Decode(&snapshot); err != nil {
-		return fmt.Errorf("failed to decode snapshot: %w", err)
+	var state fsmState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return fmt.Errorf("failed to unmarshal snapshot: %w", err)
 	}
 
-	m.maxFileId = snapshot.MaxFileId
+	m.mu.Lock()
+	m.maxFileId = state.MaxFileId
+	m.maxVolumeId = state.MaxVolumeId
+	m.topologyId = state.TopologyId
+	m.mu.Unlock()
+
+	if m.onMaxFileIdUpdate != nil {
+		m.onMaxFileIdUpdate(state.MaxFileId)
+	}
+	if m.onMaxVolumeIdUpdate != nil {
+		m.onMaxVolumeIdUpdate(state.MaxVolumeId)
+	}
+	if state.TopologyId != "" && m.onTopologyIdSet != nil {
+		m.onTopologyIdSet(state.TopologyId)
+	}
 	return nil
 }
 
 // GetMaxFileId returns the current maximum file ID.
 func (m *MasterFSM) GetMaxFileId() uint64 {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return m.maxFileId
 }
 
-// masterFSMSnapshot is a snapshot of the MasterFSM state.
-type masterFSMSnapshot struct {
-	maxFileId uint64
+// GetMaxVolumeId returns the current maximum volume ID.
+func (m *MasterFSM) GetMaxVolumeId() uint32 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.maxVolumeId
 }
 
-// Persist persists the snapshot to the given sink.
+// GetTopologyId returns the cluster topology ID.
+func (m *MasterFSM) GetTopologyId() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.topologyId
+}
+
+// fsmState is the serialized form of MasterFSM for snapshots.
+type fsmState struct {
+	MaxFileId   uint64 `json:"max_file_id"`
+	MaxVolumeId uint32 `json:"max_volume_id"`
+	TopologyId  string `json:"topology_id"`
+}
+
+// masterFSMSnapshot holds a serialized FSM snapshot.
+type masterFSMSnapshot struct {
+	data []byte
+}
+
+// Persist writes the snapshot to the sink.
 func (s *masterFSMSnapshot) Persist(sink raft.SnapshotSink) error {
-	err := json.NewEncoder(sink).Encode(struct {
-		MaxFileId uint64 `json:"max_file_id"`
-	}{
-		MaxFileId: s.maxFileId,
-	})
-	if err != nil {
+	if _, err := sink.Write(s.data); err != nil {
 		sink.Cancel()
-		return fmt.Errorf("failed to encode snapshot: %w", err)
+		return fmt.Errorf("failed to write snapshot: %w", err)
 	}
 	return sink.Close()
 }
@@ -157,17 +221,16 @@ func (s *masterFSMSnapshot) Persist(sink raft.SnapshotSink) error {
 // Release is called when we are finished with the snapshot.
 func (s *masterFSMSnapshot) Release() {}
 
-// ensureFileExists creates a file if it doesn't exist.
-func ensureFileExists(path string) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create directory: %w", err)
-	}
-
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0644)
+// encodeLogEntry serializes a RaftCommand into a LogEntry JSON byte slice
+// suitable for passing to raft.Raft.Apply.
+func encodeLogEntry(cmd RaftCommand) ([]byte, error) {
+	payload, err := cmd.Encode()
 	if err != nil {
-		return fmt.Errorf("failed to create file: %w", err)
+		return nil, fmt.Errorf("failed to encode command payload: %w", err)
 	}
-	defer file.Close()
-	return nil
+	entry := LogEntry{
+		Type:    cmd.Type(),
+		Payload: json.RawMessage(payload),
+	}
+	return json.Marshal(entry)
 }

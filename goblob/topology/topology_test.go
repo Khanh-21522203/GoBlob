@@ -272,14 +272,14 @@ func TestVolumeLayout(t *testing.T) {
 
 		vl.AddVolumeLayout(loc)
 
-		// Lookup volume
-		foundLoc, ok := vl.LookupVolume(1)
-		if !ok || foundLoc == nil {
+		// Lookup volume — returns a slice of replica locations.
+		foundLocs, ok := vl.LookupVolume(1)
+		if !ok || len(foundLocs) == 0 {
 			t.Fatal("failed to lookup volume")
 		}
 
-		if foundLoc.VolumeId != 1 {
-			t.Errorf("expected volume id=1, got %d", foundLoc.VolumeId)
+		if foundLocs[0].VolumeId != 1 {
+			t.Errorf("expected volume id=1, got %d", foundLocs[0].VolumeId)
 		}
 	})
 

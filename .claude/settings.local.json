@@ -98,7 +98,16 @@
       "Bash(go build ./goblob/topology && go test ./goblob/topology -short -run TestDataNode/volume_management -v 2>&1)",
       "Bash(timeout 10 go test ./goblob/topology -short -v 2>&1 | head -50)",
       "Bash(go build ./goblob/topology && go test ./goblob/topology -short -v 2>&1 | tail -30)",
-      "Bash(go test ./goblob/raft/... ./goblob/sequence/... ./goblob/topology/... ./goblob/cluster/... -short -race 2>&1)"
+      "Bash(go test ./goblob/raft/... ./goblob/sequence/... ./goblob/topology/... ./goblob/cluster/... -short -race 2>&1)",
+      "Bash(go test:*)",
+      "Bash(xargs protoc:*)",
+      "Bash(go get:*)",
+      "Bash(go build:*)",
+      "Bash(awk:*)",
+      "Bash(go list:*)",
+      "Bash(grep:*)",
+      "Bash(mkdir:*)",
+      "Bash(ls:*)"
     ]
   }
 }

@@ -4,14 +4,23 @@ import "time"
 
 // RaftConfig holds configuration for the Raft consensus layer.
 type RaftConfig struct {
-	// DataDir is the directory for Raft persistent storage.
-	DataDir string `mapstructure:"data_dir"`
+	// NodeId is the unique identity of this node (e.g., "ip:port").
+	// If empty, the transport's bound address is used.
+	NodeId string `mapstructure:"node_id"`
 
 	// BindAddr is the local address for Raft TCP transport.
 	BindAddr string `mapstructure:"bind_addr"`
 
-	// Bootstrap enables single-node mode for bootstrapping a new cluster.
-	Bootstrap bool `mapstructure:"bootstrap"`
+	// MetaDir is the directory for Raft persistent storage (log, stable store, snapshots).
+	MetaDir string `mapstructure:"meta_dir"`
+
+	// Peers lists all master addresses (including self).
+	// Empty or nil means single-node mode.
+	Peers []string `mapstructure:"peers"`
+
+	// SingleMode bootstraps a single-node cluster that immediately becomes leader.
+	// Set when -peers=none.
+	SingleMode bool `mapstructure:"single_mode"`
 
 	// SnapshotThreshold controls how many logs are retained before a snapshot.
 	SnapshotThreshold uint64 `mapstructure:"snapshot_threshold"`
@@ -30,27 +39,31 @@ type RaftConfig struct {
 
 	// CommitTimeout is how long to wait for log commits.
 	CommitTimeout time.Duration `mapstructure:"commit_timeout"`
+
+	// MaxAppendEntries is the max number of log entries to append at once.
+	MaxAppendEntries int `mapstructure:"max_append_entries"`
 }
 
 // DefaultRaftConfig returns sensible defaults for Raft configuration.
 func DefaultRaftConfig() *RaftConfig {
 	return &RaftConfig{
-		DataDir:           "./raft",
-		BindAddr:          "127.0.0.1:8080",
-		Bootstrap:         true,
-		SnapshotThreshold: 8192,
-		SnapshotInterval:  2 * time.Minute,
-		HeartbeatTimeout:  1 * time.Second,
-		ElectionTimeout:   1 * time.Second,
+		MetaDir:            "./raft",
+		BindAddr:           "127.0.0.1:8080",
+		SingleMode:         true,
+		SnapshotThreshold:  8192,
+		SnapshotInterval:   2 * time.Minute,
+		HeartbeatTimeout:   1 * time.Second,
+		ElectionTimeout:    1 * time.Second,
 		LeaderLeaseTimeout: 500 * time.Millisecond,
-		CommitTimeout:     50 * time.Millisecond,
+		CommitTimeout:      50 * time.Millisecond,
+		MaxAppendEntries:   64,
 	}
 }
 
 // Validate checks if the configuration is valid.
 func (c *RaftConfig) Validate() error {
-	if c.DataDir == "" {
-		return &ConfigError{Field: "data_dir", Message: "cannot be empty"}
+	if c.MetaDir == "" {
+		return &ConfigError{Field: "meta_dir", Message: "cannot be empty"}
 	}
 	if c.BindAddr == "" {
 		return &ConfigError{Field: "bind_addr", Message: "cannot be empty"}

@@ -1,18 +1,18 @@
 package sequence
 
-import (
-	"context"
-)
-
 // Sequencer generates globally unique, monotonically increasing NeedleIds.
 // This is essential for distributed file systems to avoid ID collisions.
 type Sequencer interface {
-	// NextFileId returns the next unique file ID.
-	// Returns an error if the context is canceled or the sequencer fails.
-	NextFileId(ctx context.Context) (uint64, error)
+	// NextFileId returns the start of a batch of count unique IDs.
+	// Caller receives IDs [start, start+count-1] inclusive.
+	NextFileId(count uint64) uint64
 
-	// GetMaxFileId returns the current maximum file ID that has been allocated.
-	GetMaxFileId() uint64
+	// SetMax advances the counter to at least maxId (used during recovery).
+	// Called when volume servers report higher NeedleIds than the sequencer knows.
+	SetMax(maxId uint64)
+
+	// GetMax returns the current maximum issued ID.
+	GetMax() uint64
 
 	// Close gracefully shuts down the sequencer and releases resources.
 	Close() error
@@ -20,9 +20,9 @@ type Sequencer interface {
 
 // Config holds common configuration for sequencer implementations.
 type Config struct {
-	// StepSize is how many IDs to allocate at once (for performance).
-	// Default is 10000.
-	StepSize int
+	// StepSize is how many IDs to pre-allocate at once (for crash safety).
+	// On crash, at most StepSize IDs may be wasted. Default: 10000.
+	StepSize uint64
 
 	// DataDir is the directory for persistent storage.
 	DataDir string

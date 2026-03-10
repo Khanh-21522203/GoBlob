@@ -282,6 +282,12 @@ func TestDiskLocationFreeSpace(t *testing.T) {
 	}
 	defer dl.Close()
 
+	// On Windows, disk size is not available (getDiskSize returns 0)
+	// Skip the free space checks on platforms without Statfs support
+	if dl.MaxSize() == 0 {
+		t.Skip("Disk size not available on this platform")
+	}
+
 	// Free space should be reasonable
 	freeSpace := dl.FreeSpace()
 	if freeSpace == 0 {
