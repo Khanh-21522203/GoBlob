@@ -2,10 +2,6 @@
 blob
 *.exe
 
-# Generated protobuf
-**/*.pb.go
-**/*_grpc.pb.go
-
 # Dependencies
 vendor/
 

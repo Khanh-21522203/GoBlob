@@ -40,15 +40,8 @@ jobs:
           cache: true
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
-      - name: Run govulncheck (exclude generated pb packages)
-        run: |
-          # pb/*.pb.go are generated and not committed; exclude those packages
-          PKGS=$(go list ./goblob/... 2>/dev/null | grep -v '/pb/' || true)
-          if [ -z "$PKGS" ]; then
-            echo "No packages found"
-            exit 1
-          fi
-          govulncheck $PKGS
+      - name: Run govulncheck
+        run: govulncheck ./goblob/...
 
   fuzz:
     name: JWT fuzz test (short)
