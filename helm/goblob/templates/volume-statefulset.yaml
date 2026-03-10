@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Release.Name }}-volume
+spec:
+  serviceName: {{ .Release.Name }}-volume
+  replicas: {{ .Values.volume.replicas }}
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-volume
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-volume
+    spec:
+      containers:
+        - name: volume
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          args: ["volume", "-ip=0.0.0.0", "-port=8080", "-grpc.port=18080", "-masters={{ .Release.Name }}-master:9333", "-dir=/data/volume"]
+          ports:
+            - containerPort: 8080
+            - containerPort: 18080
+          volumeMounts:
+            - name: data
+              mountPath: /data/volume
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ .Values.volume.storageSize }}

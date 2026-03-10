@@ -16,6 +16,7 @@ import (
 
 	"GoBlob/goblob/cluster"
 	"GoBlob/goblob/config"
+	"GoBlob/goblob/obs"
 	"GoBlob/goblob/pb/master_pb"
 	"GoBlob/goblob/raft"
 	"GoBlob/goblob/security"
@@ -51,7 +52,7 @@ func NewMasterServer(mux *http.ServeMux, opt *MasterOption) (*MasterServer, erro
 func NewMasterServerWithGRPC(mux *http.ServeMux, grpcServer *grpc.Server, opt *MasterOption) (*MasterServer, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	logger := slog.Default().With("server", "master")
+	logger := obs.New("master").With("server", "master")
 
 	// Create topology
 	topo := topology.NewTopology()
@@ -77,6 +78,7 @@ func NewMasterServerWithGRPC(mux *http.ServeMux, grpcServer *grpc.Server, opt *M
 		HeartbeatTimeout:   1 * time.Second,
 		ElectionTimeout:    1 * time.Second,
 		LeaderLeaseTimeout: 500 * time.Millisecond,
+		CommitTimeout:      50 * time.Millisecond,
 		MaxAppendEntries:   32,
 	}
 
@@ -128,6 +130,11 @@ func NewMasterServerWithGRPC(mux *http.ServeMux, grpcServer *grpc.Server, opt *M
 	raftServer, err := raft.NewRaftServer(raftConfig, fsm, func(isLeader bool) {
 		ms.isLeader.Store(isLeader)
 		if isLeader {
+			obs.MasterLeadershipGauge.Set(1)
+		} else {
+			obs.MasterLeadershipGauge.Set(0)
+		}
+		if isLeader {
 			if err := ms.Raft.Barrier(10 * time.Second); err != nil {
 				ms.logger.Warn("raft barrier failed on leadership", "error", err)
 			}
@@ -166,6 +173,11 @@ func NewMasterServerWithGRPC(mux *http.ServeMux, grpcServer *grpc.Server, opt *M
 		ms.Topo.SetMaxVolumeId(maxVolumeID)
 	}
 	ms.isLeader.Store(ms.Raft.IsLeader())
+	if ms.Raft.IsLeader() {
+		obs.MasterLeadershipGauge.Set(1)
+	} else {
+		obs.MasterLeadershipGauge.Set(0)
+	}
 	if topologyID := fsm.GetTopologyId(); topologyID != "" {
 		ms.topologyId.Store(topologyID)
 	}
@@ -196,11 +208,14 @@ func (ms *MasterServer) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /vol/grow", ms.handleVolGrow)
 	mux.HandleFunc("POST /vol/vacuum", ms.handleVacuum)
 	mux.HandleFunc("GET /cluster/healthz", ms.handleHealthz)
+	mux.HandleFunc("GET /health", ms.handleHealthz)
+	mux.HandleFunc("GET /ready", ms.handleReady)
 }
 
 // Shutdown gracefully shuts down the master server.
 func (ms *MasterServer) Shutdown() {
 	ms.cancel()
+	obs.MasterLeadershipGauge.Set(0)
 
 	// Stop Raft
 	if ms.Raft != nil {

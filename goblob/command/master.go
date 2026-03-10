@@ -14,6 +14,7 @@ type MasterCommand struct {
 	host               string
 	port               int
 	grpcPort           int
+	metricsPort        int
 	metaDir            string
 	peers              string
 	volumeSizeLimitMB  uint
@@ -24,6 +25,8 @@ type MasterCommand struct {
 	maintenanceScripts string
 	maintenanceSleep   time.Duration
 	maintenanceFiler   string
+	pushgatewayURL     string
+	pushgatewayJob     string
 }
 
 func init() {
@@ -41,6 +44,7 @@ func (c *MasterCommand) SetFlags(fs *flag.FlagSet) {
 	fs.StringVar(&c.host, "ip", "127.0.0.1", "bind host")
 	fs.IntVar(&c.port, "port", def.Port, "master HTTP port")
 	fs.IntVar(&c.grpcPort, "grpc.port", def.GRPCPort, "master gRPC port")
+	fs.IntVar(&c.metricsPort, "metricsPort", 0, "metrics/debug HTTP port (disabled when 0)")
 	fs.StringVar(&c.metaDir, "mdir", def.MetaDir, "master metadata directory")
 	fs.StringVar(&c.peers, "peers", "", "comma-separated peer gRPC addresses")
 	fs.UintVar(&c.volumeSizeLimitMB, "volumeSizeLimitMB", uint(def.VolumeSizeLimitMB), "max volume size in MB")
@@ -51,6 +55,8 @@ func (c *MasterCommand) SetFlags(fs *flag.FlagSet) {
 	fs.StringVar(&c.maintenanceScripts, "maintenanceScripts", def.MaintenanceScripts, "maintenance script file path")
 	fs.DurationVar(&c.maintenanceSleep, "maintenanceSleep", def.MaintenanceSleep, "maintenance script interval")
 	fs.StringVar(&c.maintenanceFiler, "maintenanceFiler", "127.0.0.1:8888", "filer HTTP address used by maintenance shell")
+	fs.StringVar(&c.pushgatewayURL, "pushgatewayURL", "", "pushgateway base URL")
+	fs.StringVar(&c.pushgatewayJob, "pushgatewayJob", "goblob-master", "pushgateway job name")
 }
 
 func (c *MasterCommand) Run(ctx context.Context, args []string) error {
@@ -73,6 +79,7 @@ func (c *MasterCommand) Run(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	metricsRT := startMetricsRuntime(c.host, c.metricsPort, c.pushgatewayURL, c.pushgatewayJob)
 	reload := func() error {
 		secCfg, err := loadSecurityConfig()
 		if err != nil {
@@ -83,6 +90,7 @@ func (c *MasterCommand) Run(ctx context.Context, args []string) error {
 	}
 	if err := reload(); err != nil {
 		shutdownCtx, cancel := shutdownCtx()
+		metricsRT.shutdown(shutdownCtx)
 		rt.shutdown(shutdownCtx)
 		cancel()
 		return err
@@ -93,6 +101,7 @@ func (c *MasterCommand) Run(ctx context.Context, args []string) error {
 	script, err := loadMaintenanceScript(opt.MaintenanceScripts)
 	if err != nil {
 		shutdownCtx, cancel := shutdownCtx()
+		metricsRT.shutdown(shutdownCtx)
 		rt.shutdown(shutdownCtx)
 		cancel()
 		return err
@@ -110,6 +119,7 @@ func (c *MasterCommand) Run(ctx context.Context, args []string) error {
 	<-ctx.Done()
 	shutdownCtx, cancel := shutdownCtx()
 	defer cancel()
+	metricsRT.shutdown(shutdownCtx)
 	rt.shutdown(shutdownCtx)
 	return nil
 }

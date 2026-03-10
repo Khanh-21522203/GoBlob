@@ -1,0 +1,50 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-master
+spec:
+  selector:
+    app: {{ .Release.Name }}-master
+  ports:
+    - name: http
+      port: 9333
+      targetPort: 9333
+    - name: grpc
+      port: 19333
+      targetPort: 19333
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-volume
+spec:
+  selector:
+    app: {{ .Release.Name }}-volume
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-filer
+spec:
+  selector:
+    app: {{ .Release.Name }}-filer
+  ports:
+    - name: http
+      port: 8888
+      targetPort: 8888
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-s3
+spec:
+  selector:
+    app: {{ .Release.Name }}-s3
+  ports:
+    - name: http
+      port: 8333
+      targetPort: 8333

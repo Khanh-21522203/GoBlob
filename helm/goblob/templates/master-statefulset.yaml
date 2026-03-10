@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Release.Name }}-master
+spec:
+  serviceName: {{ .Release.Name }}-master
+  replicas: {{ .Values.master.replicas }}
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-master
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-master
+    spec:
+      containers:
+        - name: master
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          args: ["master", "-ip=0.0.0.0", "-port=9333", "-grpc.port=19333", "-mdir=/data/master"]
+          ports:
+            - containerPort: 9333
+            - containerPort: 19333
+          volumeMounts:
+            - name: data
+              mountPath: /data/master
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ .Values.master.storageSize }}

@@ -11,11 +11,14 @@ import (
 )
 
 type S3Command struct {
-	host        string
-	port        int
-	filers      string
-	domainName  string
-	bucketsPath string
+	host           string
+	port           int
+	metricsPort    int
+	filers         string
+	domainName     string
+	bucketsPath    string
+	pushgatewayURL string
+	pushgatewayJob string
 }
 
 func init() {
@@ -32,9 +35,12 @@ func (c *S3Command) SetFlags(fs *flag.FlagSet) {
 	def := s3api.DefaultS3ApiServerOption()
 	fs.StringVar(&c.host, "ip", "127.0.0.1", "bind host")
 	fs.IntVar(&c.port, "port", def.Port, "s3 HTTP port")
+	fs.IntVar(&c.metricsPort, "metricsPort", 0, "metrics/debug HTTP port (disabled when 0)")
 	fs.StringVar(&c.filers, "filer", "127.0.0.1:8888", "comma-separated filer HTTP addresses")
 	fs.StringVar(&c.domainName, "domainName", "", "s3 domain name")
 	fs.StringVar(&c.bucketsPath, "filer.path", def.BucketsPath, "buckets path in filer")
+	fs.StringVar(&c.pushgatewayURL, "pushgatewayURL", "", "pushgateway base URL")
+	fs.StringVar(&c.pushgatewayJob, "pushgatewayJob", "goblob-s3", "pushgateway job name")
 }
 
 func (c *S3Command) Run(ctx context.Context, args []string) error {
@@ -60,11 +66,13 @@ func (c *S3Command) Run(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	metricsRT := startMetricsRuntime(c.host, c.metricsPort, c.pushgatewayURL, c.pushgatewayJob)
 	reload := func() error {
 		return s3.ReloadIAM(context.Background())
 	}
 	if err := reload(); err != nil {
 		shutdownCtx, cancel := shutdownCtx()
+		metricsRT.shutdown(shutdownCtx)
 		rt.shutdown(shutdownCtx)
 		cancel()
 		return err
@@ -75,6 +83,7 @@ func (c *S3Command) Run(ctx context.Context, args []string) error {
 	<-ctx.Done()
 	shutdownCtx, cancel := shutdownCtx()
 	defer cancel()
+	metricsRT.shutdown(shutdownCtx)
 	rt.shutdown(shutdownCtx)
 	return nil
 }

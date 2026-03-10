@@ -9,7 +9,9 @@ import (
 
 	"google.golang.org/grpc"
 
-	"GoBlob/goblob/filer/leveldb2"
+	"GoBlob/goblob/filer"
+	"GoBlob/goblob/filer/storeloader"
+	"GoBlob/goblob/security"
 	"GoBlob/goblob/server"
 )
 
@@ -39,7 +41,12 @@ func startMasterRuntime(opt *server.MasterOption) (*masterRuntime, error) {
 		return nil, fmt.Errorf("listen master grpc: %w", err)
 	}
 
-	httpServer := &http.Server{Handler: mux}
+	httpServer := &http.Server{
+		Handler: security.ApplyHardening(mux, security.HardeningOption{
+			MaxBodyBytes: 100 * 1024 * 1024,
+			Burst:        200,
+		}),
+	}
 	go func() { _ = httpServer.Serve(httpLis) }()
 	go func() { _ = grpcServer.Serve(grpcLis) }()
 
@@ -89,7 +96,12 @@ func startVolumeRuntime(opt *server.VolumeServerOption) (*volumeRuntime, error) 
 		return nil, fmt.Errorf("listen volume grpc: %w", err)
 	}
 
-	adminServer := &http.Server{Handler: adminMux}
+	adminServer := &http.Server{
+		Handler: security.ApplyHardening(adminMux, security.HardeningOption{
+			MaxBodyBytes: opt.FileSizeLimitMB * 1024 * 1024,
+			Burst:        200,
+		}),
+	}
 	go func() { _ = adminServer.Serve(adminLis) }()
 	go func() { _ = grpcServer.Serve(grpcLis) }()
 
@@ -120,7 +132,7 @@ type filerRuntime struct {
 	server     *server.FilerServer
 	httpServer *http.Server
 	grpcServer *grpc.Server
-	store      *leveldb2.LevelDB2Store
+	store      filer.FilerStore
 }
 
 func startFilerRuntime(opt *server.FilerOption) (*filerRuntime, error) {
@@ -132,7 +144,15 @@ func startFilerRuntime(opt *server.FilerOption) (*filerRuntime, error) {
 		return nil, err
 	}
 
-	store, err := leveldb2.NewLevelDB2Store(opt.DefaultStoreDir)
+	storeCfg := map[string]string{
+		"backend":      opt.StoreBackend,
+		"store.dir":    opt.DefaultStoreDir,
+		"leveldb2.dir": opt.DefaultStoreDir,
+	}
+	for k, v := range opt.StoreConfig {
+		storeCfg[k] = v
+	}
+	store, err := storeloader.LoadFilerStoreFromConfig(storeCfg)
 	if err != nil {
 		fs.Shutdown()
 		return nil, fmt.Errorf("init filer store: %w", err)
@@ -154,7 +174,12 @@ func startFilerRuntime(opt *server.FilerOption) (*filerRuntime, error) {
 		return nil, fmt.Errorf("listen filer grpc: %w", err)
 	}
 
-	httpServer := &http.Server{Handler: defaultMux}
+	httpServer := &http.Server{
+		Handler: security.ApplyHardening(defaultMux, security.HardeningOption{
+			MaxBodyBytes: int64(opt.MaxFileSizeMB) * 1024 * 1024,
+			Burst:        150,
+		}),
+	}
 	go func() { _ = httpServer.Serve(httpLis) }()
 	go func() { _ = grpcServer.Serve(grpcLis) }()
 
@@ -192,7 +217,12 @@ func startHTTPRuntime(host string, port int, handler http.Handler, stopFn func()
 		}
 		return nil, err
 	}
-	httpServer := &http.Server{Handler: handler}
+	httpServer := &http.Server{
+		Handler: security.ApplyHardening(handler, security.HardeningOption{
+			MaxBodyBytes: 100 * 1024 * 1024,
+			Burst:        200,
+		}),
+	}
 	go func() { _ = httpServer.Serve(lis) }()
 	return &httpRuntime{httpServer: httpServer, stopFn: stopFn}, nil
 }

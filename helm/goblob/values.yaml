@@ -1,0 +1,17 @@
+image:
+  repository: goblob
+  tag: latest
+
+master:
+  replicas: 1
+  storageSize: 10Gi
+
+volume:
+  replicas: 1
+  storageSize: 100Gi
+
+filer:
+  replicas: 1
+
+s3:
+  replicas: 1

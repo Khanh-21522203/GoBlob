@@ -1,0 +1,48 @@
+services:
+  master:
+    build: .
+    command: ["master", "-ip=0.0.0.0", "-port=9333", "-grpc.port=19333", "-mdir=/data/master", "-metricsPort=9090"]
+    ports:
+      - "9333:9333"
+      - "19333:19333"
+      - "9090:9090"
+    volumes:
+      - master-data:/data/master
+
+  volume:
+    build: .
+    command: ["volume", "-ip=0.0.0.0", "-port=8080", "-grpc.port=18080", "-masters=master:9333", "-dir=/data/volume", "-metricsPort=9091"]
+    ports:
+      - "8080:8080"
+      - "18080:18080"
+      - "9091:9091"
+    depends_on:
+      - master
+    volumes:
+      - volume-data:/data/volume
+
+  filer:
+    build: .
+    command: ["filer", "-ip=0.0.0.0", "-port=8888", "-grpc.port=18888", "-masters=master:9333", "-storeDir=/data/filer", "-metricsPort=9092"]
+    ports:
+      - "8888:8888"
+      - "18888:18888"
+      - "9092:9092"
+    depends_on:
+      - master
+    volumes:
+      - filer-data:/data/filer
+
+  s3:
+    build: .
+    command: ["s3", "-ip=0.0.0.0", "-port=8333", "-filer=filer:8888", "-metricsPort=9093"]
+    ports:
+      - "8333:8333"
+      - "9093:9093"
+    depends_on:
+      - filer
+
+volumes:
+  master-data: {}
+  volume-data: {}
+  filer-data: {}

@@ -1,0 +1,17 @@
+[Unit]
+Description=GoBlob Volume Server
+After=network.target goblob-master.service
+
+[Service]
+Type=simple
+User=goblob
+Group=goblob
+ExecStart=/usr/local/bin/blob volume -ip 0.0.0.0 -port 8080 -grpc.port 18080 -masters 127.0.0.1:9333 -dir /var/lib/goblob/volume
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=goblob-volume
+
+[Install]
+WantedBy=multi-user.target

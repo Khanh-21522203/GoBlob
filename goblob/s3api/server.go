@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"GoBlob/goblob/core/types"
+	"GoBlob/goblob/obs"
 	s3auth "GoBlob/goblob/s3api/auth"
 	s3iam "GoBlob/goblob/s3api/iam"
 )
@@ -48,10 +49,14 @@ func NewS3ApiServer(mux *http.ServeMux, opt *S3ApiServerOption) (*S3ApiServer, e
 	if opt.BucketsPath == "" {
 		opt.BucketsPath = "/buckets"
 	}
-	logger := slog.Default().With("server", "s3api")
+	logger := obs.New("s3").With("server", "s3api")
 
 	filerClient := NewFilerClient(opt.Filers, opt.BucketsPath)
-	iamMgr, err := s3iam.NewIdentityAccessManagement(filerClient, logger)
+	var iamClient s3iam.FilerIAMClient
+	if len(opt.Filers) > 0 {
+		iamClient = filerClient
+	}
+	iamMgr, err := s3iam.NewIdentityAccessManagement(iamClient, logger)
 	if err != nil {
 		return nil, fmt.Errorf("initialize iam manager: %w", err)
 	}
@@ -68,6 +73,8 @@ func NewS3ApiServer(mux *http.ServeMux, opt *S3ApiServerOption) (*S3ApiServer, e
 	}
 
 	if mux != nil {
+		mux.HandleFunc("/health", s3.handleHealth)
+		mux.HandleFunc("/ready", s3.handleReady)
 		mux.HandleFunc("/", s3.handle)
 	}
 	return s3, nil
@@ -79,6 +86,21 @@ func (s *S3ApiServer) Shutdown() {}
 // ReloadIAM allows tests or integrations to refresh IAM config from filer.
 func (s *S3ApiServer) ReloadIAM(ctx context.Context) error {
 	return s.iam.LoadFromFiler(ctx)
+}
+
+func (s *S3ApiServer) handleHealth(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("OK"))
+}
+
+func (s *S3ApiServer) handleReady(w http.ResponseWriter, r *http.Request) {
+	if s == nil || s.filerClient == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("NOT READY"))
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("READY"))
 }
 
 func (s *S3ApiServer) handle(w http.ResponseWriter, r *http.Request) {

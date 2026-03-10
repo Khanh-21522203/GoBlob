@@ -20,6 +20,7 @@ import (
 
 	"GoBlob/goblob/config"
 	"GoBlob/goblob/core/types"
+	"GoBlob/goblob/obs"
 	"GoBlob/goblob/pb"
 	"GoBlob/goblob/pb/master_pb"
 	"GoBlob/goblob/pb/volume_server_pb"
@@ -54,7 +55,7 @@ type VolumeServer struct {
 func NewVolumeServer(adminMux, publicMux *http.ServeMux, grpcServer *grpc.Server, opt *VolumeServerOption) (*VolumeServer, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	logger := slog.Default().With("server", "volume")
+	logger := obs.New("volume").With("server", "volume")
 
 	// Create storage store
 	var needleMapKind storage.NeedleMapKind
@@ -124,6 +125,8 @@ func (vs *VolumeServer) registerRoutes(adminMux, publicMux *http.ServeMux) {
 	adminMux.HandleFunc("GET /{fid}", vs.handleRead)
 	adminMux.HandleFunc("DELETE /{fid}", vs.handleDelete)
 	adminMux.HandleFunc("GET /status", vs.handleStatus)
+	adminMux.HandleFunc("GET /health", vs.handleHealth)
+	adminMux.HandleFunc("GET /ready", vs.handleReady)
 
 	// Public routes (external) - no status endpoint on public
 	publicMux.HandleFunc("GET /{fid}", vs.handleRead)
@@ -174,6 +177,8 @@ func (vs *VolumeServer) LoadNewVolumes() error {
 
 // handleWrite handles PUT /{fid} requests.
 func (vs *VolumeServer) handleWrite(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+
 	// Upload throttle
 	if vs.option.ConcurrentUploadLimitMB > 0 {
 		limit := vs.option.ConcurrentUploadLimitMB * 1024 * 1024
@@ -232,6 +237,8 @@ func (vs *VolumeServer) handleWrite(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
+	obs.VolumeServerNeedleWriteBytes.WithLabelValues(fmt.Sprintf("%d", fid.VolumeId)).Add(float64(len(n.Data)))
+	obs.VolumeServerNeedleWriteLatency.Observe(time.Since(start).Seconds())
 
 	isReplication := r.Header.Get("X-Replication") == "true"
 	if !isReplication && vs.replicator != nil {
@@ -272,6 +279,8 @@ func (vs *VolumeServer) handleWrite(w http.ResponseWriter, r *http.Request) {
 
 // handleRead handles GET /{fid} requests.
 func (vs *VolumeServer) handleRead(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+
 	// Download throttle
 	if vs.option.ConcurrentDownloadLimitMB > 0 {
 		limit := vs.option.ConcurrentDownloadLimitMB * 1024 * 1024
@@ -323,6 +332,8 @@ func (vs *VolumeServer) handleRead(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("ETag", fmt.Sprintf("%x", md5.Sum(n.Data)))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(n.Data)
+	obs.VolumeServerNeedleReadBytes.WithLabelValues(fmt.Sprintf("%d", fid.VolumeId)).Add(float64(len(n.Data)))
+	obs.VolumeServerNeedleReadLatency.Observe(time.Since(start).Seconds())
 }
 
 // handleDelete handles DELETE /{fid} requests.
@@ -365,6 +376,7 @@ func (vs *VolumeServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if vs.store != nil {
 		for _, dl := range vs.store.Locations {
 			volumeCount += dl.VolumeCount()
+			obs.VolumeServerDiskFreeBytes.WithLabelValues(dl.Directory()).Set(float64(dl.FreeSpace()))
 		}
 	}
 	status := map[string]interface{}{
@@ -375,6 +387,21 @@ func (vs *VolumeServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(status)
+}
+
+func (vs *VolumeServer) handleHealth(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("OK"))
+}
+
+func (vs *VolumeServer) handleReady(w http.ResponseWriter, r *http.Request) {
+	if vs == nil || vs.store == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("NOT READY"))
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("READY"))
 }
 
 // heartbeatLoop sends heartbeats to the master server.

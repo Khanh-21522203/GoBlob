@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: goblob-volume
+spec:
+  serviceName: goblob-volume
+  replicas: 1
+  selector:
+    matchLabels:
+      app: goblob-volume
+  template:
+    metadata:
+      labels:
+        app: goblob-volume
+    spec:
+      containers:
+        - name: volume
+          image: goblob:latest
+          args: ["volume", "-ip=0.0.0.0", "-port=8080", "-grpc.port=18080", "-masters=goblob-master:9333", "-dir=/data/volume", "-metricsPort=9091"]
+          ports:
+            - containerPort: 8080
+            - containerPort: 18080
+            - containerPort: 9091
+          volumeMounts:
+            - name: data
+              mountPath: /data/volume
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 100Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: goblob-volume
+spec:
+  selector:
+    app: goblob-volume
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+    - name: grpc
+      port: 18080
+      targetPort: 18080

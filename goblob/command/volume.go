@@ -13,6 +13,7 @@ type VolumeCommand struct {
 	host                      string
 	port                      int
 	grpcPort                  int
+	metricsPort               int
 	masters                   string
 	dirs                      []string
 	maxVolumes                int
@@ -22,6 +23,8 @@ type VolumeCommand struct {
 	concurrentDownloadLimitMB int64
 	dataCenter                string
 	rack                      string
+	pushgatewayURL            string
+	pushgatewayJob            string
 }
 
 func init() {
@@ -40,6 +43,7 @@ func (c *VolumeCommand) SetFlags(fs *flag.FlagSet) {
 	fs.StringVar(&c.host, "ip", "127.0.0.1", "bind host")
 	fs.IntVar(&c.port, "port", def.Port, "volume HTTP port")
 	fs.IntVar(&c.grpcPort, "grpc.port", def.GRPCPort, "volume gRPC port")
+	fs.IntVar(&c.metricsPort, "metricsPort", 0, "metrics/debug HTTP port (disabled when 0)")
 	fs.StringVar(&c.masters, "masters", strings.Join(def.Masters, ","), "comma-separated master HTTP addresses")
 	fs.Var(newStringSliceFlag(&c.dirs), "dir", "volume data directory (repeatable)")
 	fs.IntVar(&c.maxVolumes, "max", 7, "max volumes per directory")
@@ -49,6 +53,8 @@ func (c *VolumeCommand) SetFlags(fs *flag.FlagSet) {
 	fs.Int64Var(&c.concurrentDownloadLimitMB, "concurrentDownloadLimitMB", def.ConcurrentDownloadLimitMB, "download throttle MB")
 	fs.StringVar(&c.dataCenter, "dataCenter", def.DataCenter, "data center")
 	fs.StringVar(&c.rack, "rack", def.Rack, "rack")
+	fs.StringVar(&c.pushgatewayURL, "pushgatewayURL", "", "pushgateway base URL")
+	fs.StringVar(&c.pushgatewayJob, "pushgatewayJob", "goblob-volume", "pushgateway job name")
 }
 
 func (c *VolumeCommand) Run(ctx context.Context, args []string) error {
@@ -80,6 +86,7 @@ func (c *VolumeCommand) Run(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	metricsRT := startMetricsRuntime(c.host, c.metricsPort, c.pushgatewayURL, c.pushgatewayJob)
 	reload := func() error {
 		secCfg, err := loadSecurityConfig()
 		if err != nil {
@@ -90,6 +97,7 @@ func (c *VolumeCommand) Run(ctx context.Context, args []string) error {
 	}
 	if err := reload(); err != nil {
 		shutdownCtx, cancel := shutdownCtx()
+		metricsRT.shutdown(shutdownCtx)
 		rt.shutdown(shutdownCtx)
 		cancel()
 		return err
@@ -100,6 +108,7 @@ func (c *VolumeCommand) Run(ctx context.Context, args []string) error {
 	<-ctx.Done()
 	shutdownCtx, cancel := shutdownCtx()
 	defer cancel()
+	metricsRT.shutdown(shutdownCtx)
 	rt.shutdown(shutdownCtx)
 	return nil
 }

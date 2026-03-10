@@ -16,7 +16,10 @@ import (
 )
 
 type ServerCommand struct {
-	host string
+	host           string
+	metricsPort    int
+	pushgatewayURL string
+	pushgatewayJob string
 
 	masterPort     int
 	masterGRPCPort int
@@ -27,9 +30,11 @@ type ServerCommand struct {
 	volumeDir      string
 	volumeMax      int
 
-	filerPort     int
-	filerGRPCPort int
-	filerStoreDir string
+	filerPort         int
+	filerGRPCPort     int
+	filerStoreDir     string
+	filerStoreBackend string
+	filerStoreConfig  []string
 
 	enableS3 bool
 	s3Port   int
@@ -50,6 +55,9 @@ func (c *ServerCommand) Usage() string {
 
 func (c *ServerCommand) SetFlags(fs *flag.FlagSet) {
 	fs.StringVar(&c.host, "ip", "127.0.0.1", "bind host")
+	fs.IntVar(&c.metricsPort, "metricsPort", 0, "metrics/debug HTTP port (disabled when 0)")
+	fs.StringVar(&c.pushgatewayURL, "pushgatewayURL", "", "pushgateway base URL")
+	fs.StringVar(&c.pushgatewayJob, "pushgatewayJob", "goblob-server", "pushgateway job name")
 
 	fs.IntVar(&c.masterPort, "master.port", 9333, "master HTTP port")
 	fs.IntVar(&c.masterGRPCPort, "master.grpc.port", 19333, "master gRPC port")
@@ -63,6 +71,8 @@ func (c *ServerCommand) SetFlags(fs *flag.FlagSet) {
 	fs.IntVar(&c.filerPort, "filer.port", 8888, "filer HTTP port")
 	fs.IntVar(&c.filerGRPCPort, "filer.grpc.port", 18888, "filer gRPC port")
 	fs.StringVar(&c.filerStoreDir, "filer.storeDir", filepath.Join(".", "tmp", "filer"), "filer metadata store directory")
+	fs.StringVar(&c.filerStoreBackend, "filer.storeBackend", "leveldb2", "filer metadata backend (leveldb2|redis3|postgres2|mysql2|cassandra)")
+	fs.Var(newStringSliceFlag(&c.filerStoreConfig), "filer.store.config", "filer backend config key=value (repeatable), e.g. redis3.address=127.0.0.1:6379")
 
 	fs.BoolVar(&c.enableS3, "s3", true, "enable s3 gateway")
 	fs.IntVar(&c.s3Port, "s3.port", int(types.DefaultS3HTTPPort), "s3 HTTP port")
@@ -72,6 +82,12 @@ func (c *ServerCommand) SetFlags(fs *flag.FlagSet) {
 
 func (c *ServerCommand) Run(ctx context.Context, args []string) error {
 	_ = args
+	metricsRT := startMetricsRuntime(c.host, c.metricsPort, c.pushgatewayURL, c.pushgatewayJob)
+	defer func() {
+		shutdownCtx, cancel := shutdownCtx()
+		metricsRT.shutdown(shutdownCtx)
+		cancel()
+	}()
 
 	masterOpt := server.DefaultMasterOption()
 	masterOpt.Host = c.host
@@ -109,6 +125,16 @@ func (c *ServerCommand) Run(ctx context.Context, args []string) error {
 	filerOpt.Port = c.filerPort
 	filerOpt.GRPCPort = c.filerGRPCPort
 	filerOpt.DefaultStoreDir = c.filerStoreDir
+	filerOpt.StoreBackend = c.filerStoreBackend
+	storeConfig, err := parseKeyValuePairs(c.filerStoreConfig)
+	if err != nil {
+		shutdownCtx, cancel := shutdownCtx()
+		volumeRT.shutdown(shutdownCtx)
+		masterRT.shutdown(shutdownCtx)
+		cancel()
+		return fmt.Errorf("parse filer.store.config: %w", err)
+	}
+	filerOpt.StoreConfig = storeConfig
 	filerOpt.Masters = []string{fmt.Sprintf("%s:%d", c.host, c.masterPort)}
 
 	filerRT, err := startFilerRuntime(filerOpt)
@@ -163,6 +189,7 @@ func (c *ServerCommand) Run(ctx context.Context, args []string) error {
 	}
 	if err := reload(); err != nil {
 		shutdownCtx, cancel := shutdownCtx()
+		metricsRT.shutdown(shutdownCtx)
 		if s3RT != nil {
 			s3RT.shutdown(shutdownCtx)
 		}
@@ -178,6 +205,7 @@ func (c *ServerCommand) Run(ctx context.Context, args []string) error {
 	script, err := loadMaintenanceScript(c.masterMaintenanceScripts)
 	if err != nil {
 		shutdownCtx, cancel := shutdownCtx()
+		metricsRT.shutdown(shutdownCtx)
 		if s3RT != nil {
 			s3RT.shutdown(shutdownCtx)
 		}
@@ -201,6 +229,7 @@ func (c *ServerCommand) Run(ctx context.Context, args []string) error {
 
 	shutdownCtx, cancel := shutdownCtx()
 	defer cancel()
+	metricsRT.shutdown(shutdownCtx)
 	if s3RT != nil {
 		s3RT.shutdown(shutdownCtx)
 	}

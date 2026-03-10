@@ -1,0 +1,17 @@
+[Unit]
+Description=GoBlob Master Server
+After=network.target
+
+[Service]
+Type=simple
+User=goblob
+Group=goblob
+ExecStart=/usr/local/bin/blob master -ip 0.0.0.0 -port 9333 -grpc.port 19333 -mdir /var/lib/goblob/master
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=goblob-master
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,17 @@
+[Unit]
+Description=GoBlob S3 Gateway
+After=network.target goblob-filer.service
+
+[Service]
+Type=simple
+User=goblob
+Group=goblob
+ExecStart=/usr/local/bin/blob s3 -ip 0.0.0.0 -port 8333 -filer 127.0.0.1:8888
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=goblob-s3
+
+[Install]
+WantedBy=multi-user.target

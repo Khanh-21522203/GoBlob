@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: goblob-master
+spec:
+  serviceName: goblob-master
+  replicas: 1
+  selector:
+    matchLabels:
+      app: goblob-master
+  template:
+    metadata:
+      labels:
+        app: goblob-master
+    spec:
+      containers:
+        - name: master
+          image: goblob:latest
+          args: ["master", "-ip=0.0.0.0", "-port=9333", "-grpc.port=19333", "-mdir=/data/master", "-metricsPort=9090"]
+          ports:
+            - containerPort: 9333
+            - containerPort: 19333
+            - containerPort: 9090
+          volumeMounts:
+            - name: data
+              mountPath: /data/master
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: goblob-master
+spec:
+  selector:
+    app: goblob-master
+  ports:
+    - name: http
+      port: 9333
+      targetPort: 9333
+    - name: grpc
+      port: 19333
+      targetPort: 19333

@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"GoBlob/goblob/core/types"
+	"GoBlob/goblob/obs"
 	"GoBlob/goblob/security"
 	"GoBlob/goblob/topology"
 )
@@ -58,6 +59,8 @@ type LookupResponse struct {
 
 // handleAssign handles POST /dir/assign requests.
 func (ms *MasterServer) handleAssign(w http.ResponseWriter, r *http.Request) {
+	obs.MasterAssignRequests.Inc()
+
 	// Leader check
 	if ms.Raft == nil || !ms.Raft.IsLeader() {
 		ms.proxyToLeader(w, r)
@@ -209,6 +212,7 @@ func (ms *MasterServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"dataCenterCount": ms.Topo.GetTotalDataCenterCount(),
 		"raft":            raftStats,
 	}
+	obs.MasterVolumeCount.Set(float64(len(ms.Topo.ToProto())))
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(status)
@@ -275,6 +279,16 @@ func (ms *MasterServer) handleVacuum(w http.ResponseWriter, r *http.Request) {
 func (ms *MasterServer) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("OK"))
+}
+
+func (ms *MasterServer) handleReady(w http.ResponseWriter, r *http.Request) {
+	if ms == nil || ms.Topo == nil || ms.Raft == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte("NOT READY"))
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("READY"))
 }
 
 // proxyToLeader proxies the request to the Raft leader.

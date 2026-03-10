@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"path"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"GoBlob/goblob/config"
 	"GoBlob/goblob/filer"
 	"GoBlob/goblob/log_buffer"
+	"GoBlob/goblob/obs"
 	"GoBlob/goblob/pb/filer_pb"
 	"GoBlob/goblob/pb/iam_pb"
 	"GoBlob/goblob/security"
@@ -46,7 +48,7 @@ type FilerServer struct {
 func NewFilerServer(defaultMux, readonlyMux *http.ServeMux, grpcServer *grpc.Server, opt *FilerOption) (*FilerServer, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	logger := slog.Default().With("server", "filer")
+	logger := obs.New("filer").With("server", "filer")
 
 	// Create guards
 	filerGuard := security.NewGuard("", "", "")
@@ -94,13 +96,15 @@ func NewFilerServer(defaultMux, readonlyMux *http.ServeMux, grpcServer *grpc.Ser
 // registerRoutes registers HTTP handlers for the filer server.
 func (fs *FilerServer) registerRoutes(defaultMux, readonlyMux *http.ServeMux) {
 	// Read/write routes
-	defaultMux.HandleFunc("POST /{path...}", fs.handleFileUpload)
-	defaultMux.HandleFunc("GET /{path...}", fs.handleFileDownload)
-	defaultMux.HandleFunc("DELETE /{path...}", fs.handleDeleteEntry)
-	defaultMux.HandleFunc("GET /healthz", fs.handleHealthz)
+	defaultMux.HandleFunc("POST /{path...}", fs.instrumentHTTP(fs.handleFileUpload))
+	defaultMux.HandleFunc("GET /{path...}", fs.instrumentHTTP(fs.handleFileDownload))
+	defaultMux.HandleFunc("DELETE /{path...}", fs.instrumentHTTP(fs.handleDeleteEntry))
+	defaultMux.HandleFunc("GET /healthz", fs.instrumentHTTP(fs.handleHealthz))
+	defaultMux.HandleFunc("GET /health", fs.instrumentHTTP(fs.handleHealthz))
+	defaultMux.HandleFunc("GET /ready", fs.instrumentHTTP(fs.handleReady))
 
 	// Read-only routes
-	readonlyMux.HandleFunc("GET /{path...}", fs.handleFileDownload)
+	readonlyMux.HandleFunc("GET /{path...}", fs.instrumentHTTP(fs.handleFileDownload))
 }
 
 // SetStore sets the filer store.
@@ -320,7 +324,17 @@ func (fs *FilerServer) handleDeleteEntry(w http.ResponseWriter, r *http.Request)
 // handleHealthz handles GET /healthz requests.
 func (fs *FilerServer) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("OK"))
+	_, _ = w.Write([]byte("OK"))
+}
+
+func (fs *FilerServer) handleReady(w http.ResponseWriter, r *http.Request) {
+	if fs == nil || fs.filer == nil || fs.filer.Store == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("NOT READY"))
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("READY"))
 }
 
 func (fs *FilerServer) requireFiler(w http.ResponseWriter) bool {
@@ -365,5 +379,26 @@ func (fs *FilerServer) metadataAggregatorLoop() {
 				fs.logger.Debug("metadata events aggregated", "events", len(result.Events), "listeners", listenerCount)
 			}
 		}
+	}
+}
+
+type metricsStatusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *metricsStatusWriter) WriteHeader(code int) {
+	w.status = code
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (fs *FilerServer) instrumentHTTP(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		mw := &metricsStatusWriter{ResponseWriter: w, status: http.StatusOK}
+		next(mw, r)
+		statusCode := mw.status
+		obs.FilerRequestsTotal.WithLabelValues(r.Method, strconv.Itoa(statusCode)).Inc()
+		obs.FilerStoreLatency.WithLabelValues(strings.ToLower(r.Method)).Observe(time.Since(start).Seconds())
 	}
 }

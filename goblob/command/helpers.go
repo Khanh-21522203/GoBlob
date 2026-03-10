@@ -53,3 +53,24 @@ func bindAddress(host string, port int) string {
 	}
 	return fmt.Sprintf("%s:%d", host, port)
 }
+
+func parseKeyValuePairs(values []string) (map[string]string, error) {
+	out := make(map[string]string, len(values))
+	for _, raw := range values {
+		pair := strings.TrimSpace(raw)
+		if pair == "" {
+			continue
+		}
+		parts := strings.SplitN(pair, "=", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid key=value pair %q", pair)
+		}
+		key := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+		if key == "" {
+			return nil, fmt.Errorf("empty key in pair %q", pair)
+		}
+		out[key] = value
+	}
+	return out, nil
+}

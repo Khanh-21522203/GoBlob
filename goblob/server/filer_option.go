@@ -12,6 +12,10 @@ type FilerOption struct {
 	Masters []string
 	// DefaultStoreDir is the default directory for filer store data.
 	DefaultStoreDir string
+	// StoreBackend selects metadata backend (leveldb2, redis3, postgres2, mysql2, cassandra).
+	StoreBackend string
+	// StoreConfig carries backend-specific key/value configuration, e.g. redis3.address.
+	StoreConfig map[string]string
 	// MaxFileSizeMB is the maximum file size in MB.
 	MaxFileSizeMB int
 	// BucketsFolder is the folder name for bucket metadata.
@@ -33,18 +37,20 @@ type FilerOption struct {
 // DefaultFilerOption returns sensible defaults for filer server configuration.
 func DefaultFilerOption() *FilerOption {
 	return &FilerOption{
-		Host:                     "",
-		Port:                     8888,
-		GRPCPort:                 18888,
-		Masters:                  []string{"localhost:9333"},
-		DefaultStoreDir:          "./tmp/filer",
-		MaxFileSizeMB:            256,
-		BucketsFolder:            "/buckets",
-		DefaultReplication:       "000",
-		DefaultCollection:        "default",
-		LogFlushIntervalSeconds:  5,
+		Host:                    "",
+		Port:                    8888,
+		GRPCPort:                18888,
+		Masters:                 []string{"localhost:9333"},
+		DefaultStoreDir:         "./tmp/filer",
+		StoreBackend:            "leveldb2",
+		StoreConfig:             map[string]string{},
+		MaxFileSizeMB:           256,
+		BucketsFolder:           "/buckets",
+		DefaultReplication:      "000",
+		DefaultCollection:       "default",
+		LogFlushIntervalSeconds: 5,
 		ConcurrentUploadLimitMB: 0,
-		DataCenter:               "",
-		Rack:                     "",
+		DataCenter:              "",
+		Rack:                    "",
 	}
 }

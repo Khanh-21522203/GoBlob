@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-filer
+spec:
+  replicas: {{ .Values.filer.replicas }}
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-filer
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-filer
+    spec:
+      containers:
+        - name: filer
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          args: ["filer", "-ip=0.0.0.0", "-port=8888", "-grpc.port=18888", "-masters={{ .Release.Name }}-master:9333", "-storeDir=/data/filer"]
+          ports:
+            - containerPort: 8888
+            - containerPort: 18888

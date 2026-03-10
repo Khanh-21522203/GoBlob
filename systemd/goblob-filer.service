@@ -1,0 +1,17 @@
+[Unit]
+Description=GoBlob Filer Server
+After=network.target goblob-master.service
+
+[Service]
+Type=simple
+User=goblob
+Group=goblob
+ExecStart=/usr/local/bin/blob filer -ip 0.0.0.0 -port 8888 -grpc.port 18888 -masters 127.0.0.1:9333 -storeDir /var/lib/goblob/filer
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=goblob-filer
+
+[Install]
+WantedBy=multi-user.target
