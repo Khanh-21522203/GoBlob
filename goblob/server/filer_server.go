@@ -18,6 +18,7 @@ import (
 	"GoBlob/goblob/filer"
 	"GoBlob/goblob/log_buffer"
 	"GoBlob/goblob/pb/filer_pb"
+	"GoBlob/goblob/pb/iam_pb"
 	"GoBlob/goblob/security"
 )
 
@@ -83,6 +84,7 @@ func NewFilerServer(defaultMux, readonlyMux *http.ServeMux, grpcServer *grpc.Ser
 	filerServer.registerRoutes(defaultMux, readonlyMux)
 	if grpcServer != nil {
 		filer_pb.RegisterFilerServiceServer(grpcServer, NewFilerGRPCServer(filerServer))
+		iam_pb.RegisterIAMServiceServer(grpcServer, NewIAMGRPCServer(filerServer))
 	}
 
 	return filerServer, nil

@@ -3,82 +3,95 @@ package operation
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
-	"time"
 )
 
-type AssignOption struct {
-	Collection  string
-	Replication string
-	Ttl         string
-	Count       uint64
-	DataCenter  string
-	Rack        string
-	DiskType    string
+func normalizeUploadOption(opt *UploadOption) *UploadOption {
+	if opt == nil {
+		return &UploadOption{Count: 1}
+	}
+	out := *opt
+	if out.Count == 0 {
+		out.Count = 1
+	}
+	return &out
 }
 
-type AssignedFileId struct {
-	Fid       string `json:"fid"`
-	Url       string `json:"url"`
-	PublicUrl string `json:"publicUrl"`
-	Count     uint64 `json:"count"`
-	Auth      string `json:"auth"`
-}
-
-func Assign(ctx context.Context, masterAddr string, opt *AssignOption) (*AssignedFileId, error) {
-	params := url.Values{}
-	if opt != nil {
-		if opt.Collection != "" {
-			params.Set("collection", opt.Collection)
-		}
-		if opt.Replication != "" {
-			params.Set("replication", opt.Replication)
-		}
-		if opt.Ttl != "" {
-			params.Set("ttl", opt.Ttl)
-		}
-		if opt.Count > 0 {
-			params.Set("count", strconv.FormatUint(opt.Count, 10))
-		}
-		if opt.DataCenter != "" {
-			params.Set("dataCenter", opt.DataCenter)
-		}
-		if opt.Rack != "" {
-			params.Set("rack", opt.Rack)
-		}
-		if opt.DiskType != "" {
-			params.Set("diskType", opt.DiskType)
-		}
+// Assign requests file IDs from master /dir/assign.
+func Assign(ctx context.Context, masterAddr string, opt *UploadOption) (*AssignedFileId, error) {
+	normalized := normalizeUploadOption(opt)
+	if masterAddr == "" {
+		masterAddr = normalized.Master
+	}
+	if masterAddr == "" {
+		return nil, fmt.Errorf("master address is required")
 	}
 
-	assignURL := "http://" + masterAddr + "/dir/assign"
+	params := url.Values{}
+	if normalized.Collection != "" {
+		params.Set("collection", normalized.Collection)
+	}
+	if normalized.Replication != "" {
+		params.Set("replication", normalized.Replication)
+	}
+	if normalized.Ttl != "" {
+		params.Set("ttl", normalized.Ttl)
+	}
+	if normalized.Count > 0 {
+		params.Set("count", strconv.FormatUint(normalized.Count, 10))
+	}
+	if normalized.DataCenter != "" {
+		params.Set("dataCenter", normalized.DataCenter)
+	}
+	if normalized.Rack != "" {
+		params.Set("rack", normalized.Rack)
+	}
+	if normalized.DiskType != "" {
+		params.Set("diskType", normalized.DiskType)
+	}
+	if normalized.Preallocate > 0 {
+		params.Set("preallocate", strconv.FormatInt(normalized.Preallocate, 10))
+	}
+
+	assignURL := ensureHTTPPrefix(masterAddr) + "/dir/assign"
 	if len(params) > 0 {
 		assignURL += "?" + params.Encode()
 	}
 
-	client := &http.Client{Timeout: 30 * time.Second}
-
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, assignURL, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("build assign request: %w", err)
 	}
-
-	resp, err := client.Do(req)
+	resp, err := defaultHTTPClient().Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("assign request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusServiceUnavailable {
 		return nil, ErrNoWritableVolumes
 	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
+		return nil, &HTTPStatusError{
+			Op:         "assign",
+			URL:        assignURL,
+			StatusCode: resp.StatusCode,
+			Body:       string(body),
+		}
+	}
 
 	var result AssignedFileId
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decode assign response: %w", err)
 	}
-
+	if result.Error != "" {
+		return nil, errors.New(result.Error)
+	}
 	return &result, nil
 }
