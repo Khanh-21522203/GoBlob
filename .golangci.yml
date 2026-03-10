@@ -1,15 +1,24 @@
 linters:
   enable:
-    - vet
+    - govet
     - staticcheck
     - errcheck
     - gocritic
     - ineffassign
     - unused
+    - gosimple
+
 linters-settings:
   errcheck:
-    check-blank: true
+    # Do not flag intentional blank-identifier discards (_ = someFunc()).
+    # Errors that are silently dropped with no assignment are still flagged.
+    check-blank: false
+
 issues:
   exclude-rules:
+    # Ignore generated protobuf files entirely.
     - path: ".*\\.pb\\.go"
       linters: [all]
+    # Test files get relaxed errcheck (e.g. setup helpers, table-driven ignores).
+    - path: "_test\\.go"
+      linters: [errcheck]
