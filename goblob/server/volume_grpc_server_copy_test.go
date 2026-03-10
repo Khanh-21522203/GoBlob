@@ -155,7 +155,7 @@ func overrideWithVolumeClientFromServer(t *testing.T, source *VolumeGRPCServer) 
 	old := withVolumeServerClient
 	withVolumeServerClient = func(_ string, _ grpc.DialOption, fn func(volume_server_pb.VolumeServerClient) error) error {
 		conn, err := grpc.NewClient(
-			"bufnet",
+			"passthrough:///bufnet",
 			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return lis.Dial() }),
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
 		)

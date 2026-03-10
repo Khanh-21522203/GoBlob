@@ -46,9 +46,7 @@ jobs:
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
       - name: Run govulncheck
-        # -scan module checks the dependency graph without full type-checking,
-        # avoiding failures from platform-specific packages (e.g. golang.org/x/sys/unix).
-        run: govulncheck -scan module
+        run: govulncheck -scan module ./...
 
   fuzz:
     name: JWT fuzz test (short)

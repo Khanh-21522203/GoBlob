@@ -106,7 +106,7 @@ func dialBufConn(t *testing.T, grpcServer *grpc.Server) *grpc.ClientConn {
 		return lis.Dial()
 	}
 
-	conn, err := grpc.NewClient("bufnet", grpc.WithContextDialer(dialer), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient("passthrough:///bufnet", grpc.WithContextDialer(dialer), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		t.Fatalf("grpc.NewClient: %v", err)
 	}
