@@ -139,6 +139,16 @@ func (s *Store) Close() {
 	}
 }
 
+// ReloadExistingVolumes re-scans all disk locations and mounts newly discovered volumes.
+func (s *Store) ReloadExistingVolumes(collection string, version types.NeedleVersion) error {
+	for _, dl := range s.Locations {
+		if err := dl.LoadExistingVolumes(collection, version); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // SetDataCenter sets the data center label.
 func (s *Store) SetDataCenter(dc string) { s.dataCenter = dc }
 

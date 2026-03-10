@@ -50,16 +50,23 @@ func (t *Topology) ProcessJoinMessage(hb *master_pb.Heartbeat) error {
 	// Update the node's last seen time
 	dataNode.UpdateLastSeen()
 
+	knownVolumes := make(map[uint32]struct{})
+	for _, vol := range dataNode.GetVolumes() {
+		knownVolumes[vol.GetId()] = struct{}{}
+	}
+
 	// Process volumes
 	for _, volInfo := range hb.Volumes {
 		if err := t.processVolume(dataNode, volInfo); err != nil {
 			return fmt.Errorf("failed to process volume %d: %w", volInfo.Id, err)
 		}
+		delete(knownVolumes, volInfo.GetId())
 	}
 
 	// Process deleted volumes
 	for _, vid := range hb.DeletedVids {
 		t.removeVolume(dataNode, vid)
+		delete(knownVolumes, vid)
 	}
 
 	// Process new volume IDs (if any)
@@ -67,6 +74,11 @@ func (t *Topology) ProcessJoinMessage(hb *master_pb.Heartbeat) error {
 		// New volumes are already in the Volumes list, so we just need to ensure they're tracked
 		// This is a no-op since we already processed all volumes above
 		_ = vid
+	}
+
+	// Heartbeats send full current volume set, so any leftover known volume is stale.
+	for vid := range knownVolumes {
+		t.removeVolume(dataNode, vid)
 	}
 
 	// Update max volume counts

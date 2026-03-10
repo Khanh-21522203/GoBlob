@@ -15,6 +15,7 @@ import (
 	"google.golang.org/grpc"
 	"log/slog"
 
+	"GoBlob/goblob/config"
 	"GoBlob/goblob/filer"
 	"GoBlob/goblob/log_buffer"
 	"GoBlob/goblob/pb/filer_pb"
@@ -118,7 +119,8 @@ func (fs *FilerServer) Start() {
 	// Start log buffer flush daemon
 	fs.logBuffer.StartFlushDaemon(fs.ctx)
 
-	// TODO: Start metadata aggregator (Phase 5)
+	// Start lightweight metadata aggregation loop for listener fan-out bookkeeping.
+	go fs.metadataAggregatorLoop()
 }
 
 // Shutdown gracefully shuts down the filer server.
@@ -131,6 +133,23 @@ func (fs *FilerServer) Shutdown() {
 	// Stop gRPC server
 	if fs.grpcServer != nil {
 		fs.grpcServer.GracefulStop()
+	}
+}
+
+// ReloadConfig applies updated runtime configuration that can be safely reloaded in-place.
+func (fs *FilerServer) ReloadConfig(secCfg *config.SecurityConfig) {
+	if fs == nil || secCfg == nil {
+		return
+	}
+	if fs.filerGuard != nil {
+		fs.filerGuard.SetWhiteList(secCfg.Guard.WhiteList)
+		fs.filerGuard.SetSigningKey(secCfg.JWT.Signing.Key)
+		fs.filerGuard.SetFilerKey(secCfg.JWT.FilerSigning.Key)
+	}
+	if fs.volumeGuard != nil {
+		fs.volumeGuard.SetWhiteList(secCfg.Guard.WhiteList)
+		fs.volumeGuard.SetSigningKey(secCfg.JWT.Signing.Key)
+		fs.volumeGuard.SetFilerKey(secCfg.JWT.FilerSigning.Key)
 	}
 }
 
@@ -319,4 +338,32 @@ func normalizeAbsolutePath(raw string) string {
 		return "/"
 	}
 	return path.Clean("/" + raw)
+}
+
+func (fs *FilerServer) metadataAggregatorLoop() {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	sinceNs := int64(0)
+	for {
+		select {
+		case <-fs.ctx.Done():
+			return
+		case <-ticker.C:
+			result := fs.logBuffer.ReadFromBuffer(sinceNs)
+			if len(result.Events) == 0 {
+				continue
+			}
+			if result.NextTs > sinceNs {
+				sinceNs = result.NextTs
+			}
+
+			fs.listenersMu.Lock()
+			listenerCount := len(fs.knownListeners)
+			fs.listenersMu.Unlock()
+			if listenerCount > 0 {
+				fs.logger.Debug("metadata events aggregated", "events", len(result.Events), "listeners", listenerCount)
+			}
+		}
+	}
 }

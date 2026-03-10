@@ -76,6 +76,9 @@ func (dl *DiskLocation) LoadExistingVolumes(collection string, version types.Nee
 			continue // not a volume file
 		}
 		id := types.VolumeId(id64)
+		if _, exists := dl.volumes[id]; exists {
+			continue
+		}
 
 		v, err := NewVolume(dl.directory, collection, id, version)
 		if err != nil {

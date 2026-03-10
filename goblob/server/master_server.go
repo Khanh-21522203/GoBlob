@@ -15,6 +15,7 @@ import (
 	"log/slog"
 
 	"GoBlob/goblob/cluster"
+	"GoBlob/goblob/config"
 	"GoBlob/goblob/pb/master_pb"
 	"GoBlob/goblob/raft"
 	"GoBlob/goblob/security"
@@ -210,6 +211,15 @@ func (ms *MasterServer) Shutdown() {
 	if ms.Sequencer != nil {
 		_ = ms.Sequencer.Close()
 	}
+}
+
+// ReloadSecurityConfig applies updated security settings to the live master server.
+func (ms *MasterServer) ReloadSecurityConfig(secCfg *config.SecurityConfig) {
+	if ms == nil || ms.Guard == nil || secCfg == nil {
+		return
+	}
+	ms.Guard.SetWhiteList(secCfg.Guard.WhiteList)
+	ms.Guard.SetSigningKey(secCfg.JWT.Signing.Key)
 }
 
 // processVolumeGrowRequests processes volume growth requests from the channel.

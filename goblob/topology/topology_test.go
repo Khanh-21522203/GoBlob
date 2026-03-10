@@ -310,20 +310,20 @@ func TestTopology(t *testing.T) {
 		topo := NewTopology()
 
 		hb := &master_pb.Heartbeat{
-			Ip:           "127.0.0.1",
-			Port:         8080,
-			GrpcPort:     18080,
-			DataCenter:   "dc1",
-			Rack:         "rack1",
-			PublicUrl:    "http://127.0.0.1:8080",
-			MaxFileKey:   0,
+			Ip:         "127.0.0.1",
+			Port:       8080,
+			GrpcPort:   18080,
+			DataCenter: "dc1",
+			Rack:       "rack1",
+			PublicUrl:  "http://127.0.0.1:8080",
+			MaxFileKey: 0,
 			Volumes: []*master_pb.VolumeInformationMessage{
 				{
-					Id:             1,
-					Size:           1000,
-					Collection:     "default",
+					Id:               1,
+					Size:             1000,
+					Collection:       "default",
 					ReplicaPlacement: 0,
-					DiskType:       "hdd",
+					DiskType:         "hdd",
 				},
 			},
 			MaxVolumeCounts: []*master_pb.MaxVolumeCounts{
@@ -357,18 +357,18 @@ func TestTopology(t *testing.T) {
 		topo := NewTopology()
 
 		hb := &master_pb.Heartbeat{
-			Ip:           "127.0.0.1",
-			Port:         8080,
-			GrpcPort:     18080,
-			DataCenter:   "dc1",
-			Rack:         "rack1",
-			PublicUrl:    "http://127.0.0.1:8080",
+			Ip:         "127.0.0.1",
+			Port:       8080,
+			GrpcPort:   18080,
+			DataCenter: "dc1",
+			Rack:       "rack1",
+			PublicUrl:  "http://127.0.0.1:8080",
 			Volumes: []*master_pb.VolumeInformationMessage{
 				{
-					Id:             1,
-					Size:           1000,
-					Collection:     "default",
-					DiskType:       "hdd",
+					Id:         1,
+					Size:       1000,
+					Collection: "default",
+					DiskType:   "hdd",
 				},
 			},
 		}
@@ -383,6 +383,47 @@ func TestTopology(t *testing.T) {
 
 		if locations[0].Url != "http://127.0.0.1:8080" {
 			t.Errorf("expected url=http://127.0.0.1:8080, got %s", locations[0].Url)
+		}
+	})
+
+	t.Run("removes stale volume when heartbeat no longer reports it", func(t *testing.T) {
+		topo := NewTopology()
+
+		first := &master_pb.Heartbeat{
+			Ip:         "127.0.0.1",
+			Port:       8080,
+			GrpcPort:   18080,
+			DataCenter: "dc1",
+			Rack:       "rack1",
+			PublicUrl:  "http://127.0.0.1:8080",
+			Volumes: []*master_pb.VolumeInformationMessage{
+				{Id: 11, Collection: "default", DiskType: "hdd"},
+				{Id: 12, Collection: "default", DiskType: "hdd"},
+			},
+		}
+		if err := topo.ProcessJoinMessage(first); err != nil {
+			t.Fatalf("first heartbeat failed: %v", err)
+		}
+		if got := len(topo.LookupVolumeLocation(12)); got == 0 {
+			t.Fatalf("expected volume 12 to exist after first heartbeat")
+		}
+
+		second := &master_pb.Heartbeat{
+			Ip:         "127.0.0.1",
+			Port:       8080,
+			GrpcPort:   18080,
+			DataCenter: "dc1",
+			Rack:       "rack1",
+			PublicUrl:  "http://127.0.0.1:8080",
+			Volumes: []*master_pb.VolumeInformationMessage{
+				{Id: 11, Collection: "default", DiskType: "hdd"},
+			},
+		}
+		if err := topo.ProcessJoinMessage(second); err != nil {
+			t.Fatalf("second heartbeat failed: %v", err)
+		}
+		if got := len(topo.LookupVolumeLocation(12)); got != 0 {
+			t.Fatalf("expected volume 12 removed after second heartbeat, still has %d locations", got)
 		}
 	})
 }

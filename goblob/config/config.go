@@ -152,6 +152,7 @@ func (l *ViperLoader) LoadFilerConfig() (*FilerConfig, error) {
 func (l *ViperLoader) LoadSecurityConfig() (*SecurityConfig, error) {
 	v := l.viper
 	v.SetConfigName("security")
+	_ = v.ReadInConfig()
 
 	var cfg SecurityConfig
 	if err := v.Unmarshal(&cfg); err != nil {
@@ -163,28 +164,28 @@ func (l *ViperLoader) LoadSecurityConfig() (*SecurityConfig, error) {
 
 // Constants for default values
 const (
-	DefaultMasterHTTPPort     = 9333
-	DefaultMasterGRPCPort      = 19333
-	DefaultVolumeHTTPPort      = 8080
-	DefaultVolumeGRPCPort      = 18080
-	DefaultFilerHTTPPort       = 8888
-	DefaultFilerGRPCPort       = 18888
-	DefaultS3HTTPPort          = 8333
-	DefaultVolumeSizeLimitMB   = 30000
-	DefaultReplication         = "000"
-	DefaultGarbageThreshold    = 0.3
-	DefaultVolumeGrowthCopy1   = 7
-	DefaultVolumeGrowthCopy2   = 6
-	DefaultVolumeGrowthCopy3   = 3
-	DefaultVolumeGrowthCopyOther = 1
-	DefaultVolumeGrowthThreshold = 0.9
+	DefaultMasterHTTPPort          = 9333
+	DefaultMasterGRPCPort          = 19333
+	DefaultVolumeHTTPPort          = 8080
+	DefaultVolumeGRPCPort          = 18080
+	DefaultFilerHTTPPort           = 8888
+	DefaultFilerGRPCPort           = 18888
+	DefaultS3HTTPPort              = 8333
+	DefaultVolumeSizeLimitMB       = 30000
+	DefaultReplication             = "000"
+	DefaultGarbageThreshold        = 0.3
+	DefaultVolumeGrowthCopy1       = 7
+	DefaultVolumeGrowthCopy2       = 6
+	DefaultVolumeGrowthCopy3       = 3
+	DefaultVolumeGrowthCopyOther   = 1
+	DefaultVolumeGrowthThreshold   = 0.9
 	DefaultMaintenanceSleepMinutes = 17
-	DefaultIndexType           = "leveldb"
-	DefaultReadMode            = "redirect"
-	DefaultHeartbeatInterval   = "5s"
-	DefaultPreStopSeconds       = 10
-	DefaultMaxFileSizeMB        = 4
-	DefaultMaxFilenameLength    = 255
-	DefaultBucketsFolder        = "/buckets"
+	DefaultIndexType               = "leveldb"
+	DefaultReadMode                = "redirect"
+	DefaultHeartbeatInterval       = "5s"
+	DefaultPreStopSeconds          = 10
+	DefaultMaxFileSizeMB           = 4
+	DefaultMaxFilenameLength       = 255
+	DefaultBucketsFolder           = "/buckets"
 	DefaultLogFlushIntervalSeconds = 60
 )

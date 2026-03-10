@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 
 	"GoBlob/goblob/core/types"
@@ -333,3 +334,34 @@ func (v *Volume) Version() types.NeedleVersion { return v.SuperBlock.Version }
 
 // Collection returns the collection name.
 func (v *Volume) Collection() string { return v.collection }
+
+// NeedleIndexEntry is one live needle position in a volume index snapshot.
+type NeedleIndexEntry struct {
+	NeedleId types.NeedleId
+	Offset   types.Offset
+	Size     types.Size
+}
+
+// SnapshotLiveNeedleEntries returns live needle entries sorted by physical offset.
+func (v *Volume) SnapshotLiveNeedleEntries() []NeedleIndexEntry {
+	memDb, ok := v.nm.(*MemDb)
+	if !ok || memDb == nil {
+		return nil
+	}
+
+	entries := make([]NeedleIndexEntry, 0, memDb.FileCount())
+	memDb.iterateIndex(func(key types.NeedleId, offset types.Offset, size types.Size) {
+		if size == types.TombstoneFileSize {
+			return
+		}
+		entries = append(entries, NeedleIndexEntry{
+			NeedleId: key,
+			Offset:   offset,
+			Size:     size,
+		})
+	})
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Offset.ToActualOffset() < entries[j].Offset.ToActualOffset()
+	})
+	return entries
+}

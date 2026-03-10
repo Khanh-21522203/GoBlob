@@ -4,14 +4,16 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 )
 
 // Guard enforces access control: IP whitelist + optional JWT verification.
 type Guard struct {
+	mu         sync.RWMutex
 	whiteList  []string // CIDR ranges and/or exact IPs
 	whiteNets  []*net.IPNet
-	signingKey string   // HS256 key; empty = no JWT required
-	filerKey   string   // separate key for filer access
+	signingKey string // HS256 key; empty = no JWT required
+	filerKey   string // separate key for filer access
 }
 
 // NewGuard creates a new Guard with the given whitelist and signing keys.
@@ -53,13 +55,18 @@ func (g *Guard) compileWhiteList() {
 
 // Allowed returns true if the request passes whitelist and JWT checks.
 func (g *Guard) Allowed(r *http.Request, requiresJWT bool) bool {
+	g.mu.RLock()
+	allowed := g.isIPAllowedLocked(r.RemoteAddr)
+	signingKey := g.signingKey
+	g.mu.RUnlock()
+
 	// Check IP whitelist
-	if !g.isIPAllowed(r.RemoteAddr) {
+	if !allowed {
 		return false
 	}
 
 	// Check JWT if required and key is configured
-	if requiresJWT && g.signingKey != "" {
+	if requiresJWT && signingKey != "" {
 		token := r.Header.Get("Authorization")
 		if token == "" {
 			return false
@@ -68,7 +75,7 @@ func (g *Guard) Allowed(r *http.Request, requiresJWT bool) bool {
 		// Strip "Bearer " prefix if present
 		token = strings.TrimPrefix(token, "Bearer ")
 
-		_, err := VerifyJWT(token, g.signingKey)
+		_, err := VerifyJWT(token, signingKey)
 		return err == nil
 	}
 
@@ -77,6 +84,12 @@ func (g *Guard) Allowed(r *http.Request, requiresJWT bool) bool {
 
 // isIPAllowed checks if the IP is in the whitelist.
 func (g *Guard) isIPAllowed(remoteAddr string) bool {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.isIPAllowedLocked(remoteAddr)
+}
+
+func (g *Guard) isIPAllowedLocked(remoteAddr string) bool {
 	// Extract IP from host:port
 	host, _, err := net.SplitHostPort(remoteAddr)
 	if err != nil {
@@ -125,18 +138,23 @@ func ParseWhiteList(s string) []string {
 
 // FilerAllowed checks if a filer request is allowed.
 func (g *Guard) FilerAllowed(r *http.Request) bool {
-	if !g.isIPAllowed(r.RemoteAddr) {
+	g.mu.RLock()
+	allowed := g.isIPAllowedLocked(r.RemoteAddr)
+	filerKey := g.filerKey
+	g.mu.RUnlock()
+
+	if !allowed {
 		return false
 	}
 
-	if g.filerKey != "" {
+	if filerKey != "" {
 		token := r.Header.Get("Authorization")
 		if token == "" {
 			return false
 		}
 		token = strings.TrimPrefix(token, "Bearer ")
 
-		_, err := VerifyJWT(token, g.filerKey)
+		_, err := VerifyJWT(token, filerKey)
 		return err == nil
 	}
 
@@ -145,16 +163,22 @@ func (g *Guard) FilerAllowed(r *http.Request) bool {
 
 // SigningKey returns the JWT signing key.
 func (g *Guard) SigningKey() string {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
 	return g.signingKey
 }
 
 // FilerKey returns the filer JWT signing key.
 func (g *Guard) FilerKey() string {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
 	return g.filerKey
 }
 
 // IsWhiteListEmpty returns true if no whitelist is configured.
 func (g *Guard) IsWhiteListEmpty() bool {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
 	return len(g.whiteNets) == 0
 }
 
@@ -165,6 +189,8 @@ func (g *Guard) WhiteListContains(ipStr string) bool {
 		return false
 	}
 
+	g.mu.RLock()
+	defer g.mu.RUnlock()
 	for _, ipNet := range g.whiteNets {
 		if ipNet.Contains(ip) {
 			return true
@@ -176,21 +202,45 @@ func (g *Guard) WhiteListContains(ipStr string) bool {
 
 // GetWhiteList returns the whitelist entries.
 func (g *Guard) GetWhiteList() []string {
-	return g.whiteList
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	out := make([]string, len(g.whiteList))
+	copy(out, g.whiteList)
+	return out
 }
 
 // SetWhiteList sets a new whitelist and recompiles it.
 func (g *Guard) SetWhiteList(whiteList string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	g.whiteList = ParseWhiteList(whiteList)
 	g.compileWhiteList()
 }
 
 // HasJWTSigningKey returns true if a JWT signing key is configured.
 func (g *Guard) HasJWTSigningKey() bool {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
 	return g.signingKey != ""
 }
 
 // HasFilerKey returns true if a filer key is configured.
 func (g *Guard) HasFilerKey() bool {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
 	return g.filerKey != ""
+}
+
+// SetSigningKey updates the JWT signing key.
+func (g *Guard) SetSigningKey(signingKey string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.signingKey = signingKey
+}
+
+// SetFilerKey updates the filer JWT key.
+func (g *Guard) SetFilerKey(filerKey string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.filerKey = filerKey
 }

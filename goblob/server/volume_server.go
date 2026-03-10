@@ -18,6 +18,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"log/slog"
 
+	"GoBlob/goblob/config"
 	"GoBlob/goblob/core/types"
 	"GoBlob/goblob/pb"
 	"GoBlob/goblob/pb/master_pb"
@@ -152,6 +153,23 @@ func (vs *VolumeServer) Shutdown() {
 	}
 
 	vs.cancel()
+}
+
+// ReloadSecurityConfig applies updated security settings to the live volume server.
+func (vs *VolumeServer) ReloadSecurityConfig(secCfg *config.SecurityConfig) {
+	if vs == nil || vs.guard == nil || secCfg == nil {
+		return
+	}
+	vs.guard.SetWhiteList(secCfg.Guard.WhiteList)
+	vs.guard.SetSigningKey(secCfg.JWT.Signing.Key)
+}
+
+// LoadNewVolumes re-scans configured disk locations and mounts newly discovered volumes.
+func (vs *VolumeServer) LoadNewVolumes() error {
+	if vs == nil || vs.store == nil {
+		return fmt.Errorf("store not initialized")
+	}
+	return vs.store.ReloadExistingVolumes("", types.CurrentNeedleVersion)
 }
 
 // handleWrite handles PUT /{fid} requests.
