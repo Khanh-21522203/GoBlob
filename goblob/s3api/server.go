@@ -12,6 +12,7 @@ import (
 
 	"GoBlob/goblob/core/types"
 	"GoBlob/goblob/obs"
+	"GoBlob/goblob/quota"
 	s3auth "GoBlob/goblob/s3api/auth"
 	s3iam "GoBlob/goblob/s3api/iam"
 )
@@ -37,6 +38,7 @@ type S3ApiServer struct {
 	option      *S3ApiServerOption
 	filerClient *FilerClient
 	iam         *s3iam.IdentityAccessManagement
+	quota       *quota.Manager
 
 	logger *slog.Logger
 }
@@ -65,6 +67,7 @@ func NewS3ApiServer(mux *http.ServeMux, opt *S3ApiServerOption) (*S3ApiServer, e
 		option:      opt,
 		filerClient: filerClient,
 		iam:         iamMgr,
+		quota:       quota.NewManager(filerClient),
 		logger:      logger,
 	}
 
@@ -166,6 +169,19 @@ func (s *S3ApiServer) handleBucketLevel(w http.ResponseWriter, r *http.Request, 
 			return
 		}
 		s.handleBucketCORS(w, r, bucket)
+		return
+	case hasQueryKey(q, "lifecycle"):
+		action := s3iam.S3ActionGetBucketLifecycle
+		if r.Method == http.MethodPut {
+			action = s3iam.S3ActionPutBucketLifecycle
+		}
+		if r.Method == http.MethodDelete {
+			action = s3iam.S3ActionDeleteBucketLifecycle
+		}
+		if !s.authorize(w, r, action, bucket, "") {
+			return
+		}
+		s.handleBucketLifecycle(w, r, bucket)
 		return
 	case hasQueryKey(q, "delete"):
 		if !s.authorize(w, r, s3iam.S3ActionDeleteObject, bucket, "") {

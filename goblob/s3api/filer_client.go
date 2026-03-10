@@ -762,3 +762,17 @@ func (fc *FilerClient) KvPut(ctx context.Context, key []byte, value []byte) erro
 		return nil
 	})
 }
+
+// KvDelete deletes a key from filer KV.
+func (fc *FilerClient) KvDelete(ctx context.Context, key []byte) error {
+	return fc.withClient(ctx, func(client filer_pb.FilerServiceClient) error {
+		resp, err := client.KvDelete(ctx, &filer_pb.KvDeleteRequest{Key: key})
+		if err != nil {
+			return err
+		}
+		if resp.GetError() != "" {
+			return errors.New(resp.GetError())
+		}
+		return nil
+	})
+}

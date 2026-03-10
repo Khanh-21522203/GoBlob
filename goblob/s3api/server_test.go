@@ -2,6 +2,7 @@ package s3api
 
 import (
 	"bytes"
+	"context"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 
 	"GoBlob/goblob/core/types"
 	"GoBlob/goblob/filer/leveldb2"
+	"GoBlob/goblob/quota"
 	"GoBlob/goblob/server"
 )
 
@@ -449,5 +451,79 @@ func TestS3AdvancedFeatures(t *testing.T) {
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK || !strings.Contains(string(tagBody), "<Key>env</Key>") {
 		t.Fatalf("get tagging status=%d body=%s", resp.StatusCode, string(tagBody))
+	}
+}
+
+func TestS3BucketLifecycleAPI(t *testing.T) {
+	env := setupS3Env(t)
+	client := env.httpServer.Client()
+
+	req, _ := http.NewRequest(http.MethodPut, env.httpServer.URL+"/lc-bucket", nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("create bucket failed: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	lifecycleXML := `<LifecycleConfiguration><Rule><ID>ExpireLogs</ID><Filter><Prefix>logs/</Prefix></Filter><Expiration><Days>30</Days></Expiration><Status>Enabled</Status></Rule></LifecycleConfiguration>`
+	req, _ = http.NewRequest(http.MethodPut, env.httpServer.URL+"/lc-bucket?lifecycle", strings.NewReader(lifecycleXML))
+	req.Header.Set("Content-Type", "application/xml")
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatalf("put lifecycle failed: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("put lifecycle status=%d", resp.StatusCode)
+	}
+
+	req, _ = http.NewRequest(http.MethodGet, env.httpServer.URL+"/lc-bucket?lifecycle", nil)
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatalf("get lifecycle failed: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "ExpireLogs") {
+		t.Fatalf("get lifecycle status=%d body=%s", resp.StatusCode, string(body))
+	}
+
+	req, _ = http.NewRequest(http.MethodDelete, env.httpServer.URL+"/lc-bucket?lifecycle", nil)
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatalf("delete lifecycle failed: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete lifecycle status=%d", resp.StatusCode)
+	}
+}
+
+func TestS3QuotaEnforcement(t *testing.T) {
+	env := setupS3Env(t)
+	client := env.httpServer.Client()
+
+	req, _ := http.NewRequest(http.MethodPut, env.httpServer.URL+"/quota-bucket", nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("create bucket failed: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	if err := env.s3.quota.SetBucketQuota(context.Background(), "quota-bucket", &quota.Quota{MaxBytes: 5}); err != nil {
+		t.Fatalf("set bucket quota: %v", err)
+	}
+
+	req, _ = http.NewRequest(http.MethodPut, env.httpServer.URL+"/quota-bucket/big.txt", strings.NewReader("123456"))
+	req.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential=user1/20260310/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=deadbeef")
+	req.Header.Set("X-Amz-Date", "20260310T000000Z")
+	req.Header.Set("X-Amz-Content-Sha256", "UNSIGNED-PAYLOAD")
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatalf("put object failed: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusInsufficientStorage {
+		t.Fatalf("put object status=%d want=%d", resp.StatusCode, http.StatusInsufficientStorage)
 	}
 }

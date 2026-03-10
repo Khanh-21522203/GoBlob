@@ -253,3 +253,15 @@ goblob/                        # Main binary entry point (blob.go)
 - [Security and Authentication](cross-cutting/security-and-auth.md) - JWT, TLS, IAM, Guard
 - [gRPC and Protobuf](cross-cutting/grpc-and-protobuf.md) - Service definitions, streaming
 - [Shell and CLI](cli/shell-and-commands.md) - Admin shell, maintenance scripts
+
+### Advanced Features
+- [Erasure Coding](advanced/erasure-coding.md) - Reed-Solomon encoding/decoding package and CLI planning
+- [Tiered Storage](advanced/tiered-storage.md) - Tier scanner and archival planning command
+- [Cross-Region Replication](advanced/cross-region-replication.md) - Async metadata replication and status reporting
+- [Caching](advanced/caching.md) - LRU and Redis cache backends
+- [Deduplication](advanced/deduplication.md) - Content-hash metadata and refcount management
+- [Quota Management](advanced/quota-management.md) - Per-user/per-bucket quotas and S3 enforcement
+- [Lifecycle Policies](advanced/lifecycle-policies.md) - S3 lifecycle config and processing command
+
+### Interfaces
+- [WebDAV](interfaces/webdav.md) - WebDAV server command and filesystem adapter

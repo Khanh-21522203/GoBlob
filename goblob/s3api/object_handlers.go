@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"GoBlob/goblob/quota"
 )
 
 const (
@@ -27,7 +29,28 @@ func (s *S3ApiServer) handlePutObject(w http.ResponseWriter, r *http.Request, bu
 		return
 	}
 
+	userID := requestQuotaUserID(r)
+	if s.quota != nil {
+		if err := s.quota.CheckUserQuota(r.Context(), userID, int64(len(data))); err != nil {
+			if _, ok := err.(*quota.QuotaExceededError); ok {
+				writeS3Error(w, r, http.StatusInsufficientStorage, "InsufficientStorage", err.Error())
+				return
+			}
+			s.logger.Warn("quota user check failed", "user", userID, "err", err)
+		}
+		if err := s.quota.CheckBucketQuota(r.Context(), bucket, int64(len(data))); err != nil {
+			if _, ok := err.(*quota.QuotaExceededError); ok {
+				writeS3Error(w, r, http.StatusInsufficientStorage, "InsufficientStorage", err.Error())
+				return
+			}
+			s.logger.Warn("quota bucket check failed", "bucket", bucket, "err", err)
+		}
+	}
+
 	extended := map[string][]byte{}
+	if userID != "" {
+		extended["s3:owner"] = []byte(userID)
+	}
 	versioning, _ := s.getBucketVersioningState(r.Context(), bucket)
 	if strings.EqualFold(versioning, "Enabled") {
 		versionID := generateVersionID()
@@ -61,6 +84,16 @@ func (s *S3ApiServer) handlePutObject(w http.ResponseWriter, r *http.Request, bu
 		return ext, nil
 	}); err != nil {
 		s.logger.Warn("failed to persist object etag metadata", "bucket", bucket, "key", key, "err", err)
+	}
+	if s.quota != nil {
+		if err := s.quota.AddBucketUsage(r.Context(), bucket, int64(len(data))); err != nil {
+			s.logger.Warn("failed to add bucket quota usage", "bucket", bucket, "err", err)
+		}
+		if userID != "" {
+			if err := s.quota.AddUserUsage(r.Context(), userID, int64(len(data))); err != nil {
+				s.logger.Warn("failed to add user quota usage", "user", userID, "err", err)
+			}
+		}
 	}
 
 	w.Header().Set("ETag", "\""+eTag+"\"")
@@ -112,9 +145,24 @@ func (s *S3ApiServer) handleDeleteObject(w http.ResponseWriter, r *http.Request,
 		writeS3Error(w, r, http.StatusNotFound, "NoSuchBucket", "bucket not found")
 		return
 	}
+	obj, _ := s.filerClient.GetObject(r.Context(), bucket, key)
 	if err := s.filerClient.DeleteObject(r.Context(), bucket, key); err != nil {
 		writeS3Error(w, r, http.StatusInternalServerError, "InternalError", err.Error())
 		return
+	}
+	if s.quota != nil && obj != nil {
+		if err := s.quota.SubtractBucketUsage(r.Context(), bucket, obj.Size); err != nil {
+			s.logger.Warn("failed to subtract bucket quota usage", "bucket", bucket, "err", err)
+		}
+		owner := string(obj.Extended["s3:owner"])
+		if owner == "" {
+			owner = requestQuotaUserID(r)
+		}
+		if owner != "" {
+			if err := s.quota.SubtractUserUsage(r.Context(), owner, obj.Size); err != nil {
+				s.logger.Warn("failed to subtract user quota usage", "user", owner, "err", err)
+			}
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

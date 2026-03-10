@@ -220,3 +220,110 @@
   - `systemd-analyze verify` warns `/usr/local/bin/blob` not found on this machine (unit syntax check still runs; install path is environment-specific).
   - `gosec` reports existing low-severity findings across pre-existing code and generated protobuf files.
   - `govulncheck` reports Go stdlib vulnerabilities fixed in Go `1.26.1` (current toolchain reported `go1.26` in scan output).
+
+## Phase 8 Implementation Plan
+
+- [x] Implement erasure coding package (`goblob/storage/erasure_coding`) with encoder/decoder and validation tests
+- [x] Add `volume.ec.encode` command wiring for EC conversion planning flow
+- [x] Implement tiered storage package (`goblob/storage/tiering`) with scanner and migration/archive decision logic tests
+- [x] Add `volume.tier.upload` command for manual tier upload workflow
+- [x] Implement async cross-region replicator package (`goblob/replication/async`) with metadata event handling and conflict resolution tests
+- [x] Add `replication.status` command output for replication lag/status
+- [x] Implement caching package (`goblob/cache`) with cache interface, LRU, and Redis backend
+- [x] Implement dedup package (`goblob/storage/dedup`) with SHA-256 hash indexing and refcount operations
+- [x] Implement quota package (`goblob/quota`) and wire S3 quota enforcement + usage accounting
+- [x] Add quota CLI commands: `quota.set` and `quota.get`
+- [x] Implement S3 lifecycle package (`goblob/s3api/lifecycle`) and `lifecycle.process` command
+- [x] Wire S3 lifecycle APIs (`?lifecycle`) for put/get/delete lifecycle config
+- [x] Implement WebDAV package (`goblob/webdav`) and `webdav` command
+- [x] Add Phase 8 docs pages (`docs/advanced/*`, `docs/interfaces/webdav.md`)
+- [x] Run gofmt and verification:
+  - `go test ./goblob/cache ./goblob/storage/dedup ./goblob/quota ./goblob/storage/erasure_coding ./goblob/storage/tiering ./goblob/replication/async ./goblob/s3api/lifecycle ./goblob/webdav`
+  - `go test ./goblob/command/... ./goblob/s3api/...`
+  - `go test ./goblob/...`
+
+## Phase 8 Review
+
+- Implemented advanced feature packages:
+  - `goblob/storage/erasure_coding` (EC metadata + Reed-Solomon encode/decode)
+  - `goblob/storage/tiering` (policy types + scanner)
+  - `goblob/replication/async` (metadata subscription-based async replication)
+  - `goblob/cache` (LRU + Redis cache backends)
+  - `goblob/storage/dedup` (hash/refcount metadata manager)
+  - `goblob/quota` (per-user/per-bucket quotas)
+  - `goblob/s3api/lifecycle` (policy model + processor)
+  - `goblob/webdav` (filesystem adapter + server)
+
+- Added CLI commands:
+  - `volume.ec.encode`
+  - `volume.tier.upload`
+  - `replication.status`
+  - `quota.set`
+  - `quota.get`
+  - `lifecycle.process`
+  - `webdav`
+
+- S3 API integrations completed:
+  - lifecycle endpoint support (`?lifecycle`) for PUT/GET/DELETE
+  - bucket/user quota checks on PUT object with 507 enforcement
+  - best-effort quota usage accounting on PUT/DELETE object
+
+- Added Phase 8 docs:
+  - `docs/advanced/erasure-coding.md`
+  - `docs/advanced/tiered-storage.md`
+  - `docs/advanced/cross-region-replication.md`
+  - `docs/advanced/caching.md`
+  - `docs/advanced/deduplication.md`
+  - `docs/advanced/quota-management.md`
+  - `docs/advanced/lifecycle-policies.md`
+  - `docs/interfaces/webdav.md`
+
+- Verification executed:
+  - `go test ./goblob/...`
+  - `go test ./...`
+
+- Residual caveats:
+  - Superseded by the "Phase 8 Final Closure Plan" section below. Final closure removed these caveats.
+
+## Phase 8 Final Closure Plan
+
+- [x] Upgrade `volume.ec.encode` from planning output to executable shard generation flow
+- [x] Upgrade `volume.tier.upload` from planning output to executable upload flow
+- [x] Add chunk-data copy in `goblob/replication/async` before metadata apply
+- [x] Replace local WebDAV adapter with filer-backed filesystem implementation and command wiring
+- [x] Expand/adjust tests for the above behaviors and run:
+  - `go test ./goblob/replication/async ./goblob/command/... ./goblob/webdav/...`
+  - `go test ./goblob/...`
+  - `go test ./...`
+
+### Phase 8 Final Closure Review
+
+- Upgraded `volume.ec.encode` from plan-only output to executable flow with:
+  - `-apply`, `-source.grpc`, `-output.dir` flags
+  - source volume read via gRPC `ReadAllNeedles`
+  - Reed-Solomon shard generation and JSONL shard file output
+  - EC manifest generation (`<vid>.ec.manifest.json`)
+
+- Upgraded `volume.tier.upload` from plan-only output to executable flow with:
+  - `-apply` and `-output.dir` flags
+  - real file copy into cloud/bucket mirror path
+  - upload manifest generation (`_tier_upload_manifest.json`)
+
+- Completed async replication chunk-data copy before metadata apply:
+  - source chunk bytes fetched using source volume lookup + HTTP GET
+  - target chunk write performed using assign + HTTP PUT
+  - replicated entry chunk `FileId` rewritten to new target FID before metadata upsert
+
+- Replaced local-only WebDAV adapter with filer-backed filesystem mode:
+  - added filer gRPC filesystem implementation
+  - added command wiring to select local (`-dir`) or filer-backed (`-filer`, `-filer.path`) mode
+  - kept local adapter compatibility path
+
+- Verification executed and passing:
+  - `go test ./goblob/replication/async ./goblob/command/... ./goblob/webdav/...`
+  - `go test ./goblob/...`
+  - `go test ./...`
+
+- Closure status:
+  - Phase 8 final caveats are closed.
+  - No remaining implementation checklist gaps are tracked for phases 0-8 in this roadmap file.
