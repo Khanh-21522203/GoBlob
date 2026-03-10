@@ -294,13 +294,20 @@
 
 ## CI Govulncheck Vulnerability Remediation Plan
 
-- [ ] Upgrade vulnerable module dependency `filippo.io/edwards25519` to fixed version
-- [ ] Pin security workflow vulncheck job to patched Go toolchain version
-- [ ] Re-run local module scan checks and record outcomes
+- [x] Upgrade vulnerable module dependency `filippo.io/edwards25519` to fixed version
+- [x] Pin security workflow vulncheck job to patched Go toolchain version
+- [x] Re-run local module scan checks and record outcomes
 
 ### CI Govulncheck Vulnerability Remediation Review
 
-- Pending
+- Dependency remediation:
+  - Upgraded `filippo.io/edwards25519` from `v1.1.0` to `v1.1.1` in `go.mod`/`go.sum`.
+- Workflow remediation:
+  - Updated `vulncheck` job Go toolchain to `1.26.1` in `.github/workflows/security.yml`.
+- Verification:
+  - `go list -m filippo.io/edwards25519` -> `v1.1.1`
+  - `PATH=/tmp/go-bin:$PATH govulncheck -C goblob -scan module` (with local `go1.26.0`) -> stdlib-only findings
+  - `GOTOOLCHAIN=go1.26.1 ... govulncheck -C goblob -scan module` -> `No vulnerabilities found.`
 
 - Verification executed:
   - `go test ./goblob/...`
