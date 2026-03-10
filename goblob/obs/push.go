@@ -33,7 +33,7 @@ func StartMetricsPusher(cfg PushConfig) (cancel func()) {
 	}
 
 	logger := New("metrics-push")
-	ctx, stop := context.WithCancel(context.Background())
+	ctx, stop := context.WithCancel(context.Background()) //nolint:gocritic // stop is returned to caller
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()

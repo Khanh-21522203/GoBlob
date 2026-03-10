@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/pprof"
+	"time"
 )
 
 // MetricsServer serves prometheus metrics and debug endpoints.
@@ -23,8 +24,12 @@ func NewMetricsServer(addr string) *MetricsServer {
 	registerPprofHandlers(mux)
 
 	return &MetricsServer{
-		addr:   addr,
-		server: &http.Server{Addr: addr, Handler: mux},
+		addr: addr,
+		server: &http.Server{
+			Addr:              addr,
+			Handler:           mux,
+			ReadHeaderTimeout: 30 * time.Second,
+		},
 		logger: New("metrics"),
 	}
 }

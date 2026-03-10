@@ -1,8 +1,9 @@
 package server
 
 import (
+	crand "crypto/rand"
+	"encoding/binary"
 	"encoding/json"
-	"math/rand"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -126,7 +127,7 @@ func (ms *MasterServer) handleAssign(w http.ResponseWriter, r *http.Request) {
 	fid := types.FileId{
 		VolumeId: types.VolumeId(vid),
 		NeedleId: types.NeedleId(needleId),
-		Cookie:   types.Cookie(rand.Uint32()),
+		Cookie:   cryptoRandCookie(),
 	}
 
 	// Generate JWT
@@ -340,4 +341,14 @@ func leaderToHTTPAddress(addr string) string {
 		return string(types.ServerAddress(addr).ToHttpAddress())
 	}
 	return addr
+}
+
+// cryptoRandCookie generates a cryptographically random 4-byte cookie.
+func cryptoRandCookie() types.Cookie {
+	var b [4]byte
+	if _, err := crand.Read(b[:]); err != nil {
+		// crypto/rand failure is catastrophic; fallback should never occur
+		panic("crypto/rand unavailable: " + err.Error())
+	}
+	return types.Cookie(binary.BigEndian.Uint32(b[:]))
 }

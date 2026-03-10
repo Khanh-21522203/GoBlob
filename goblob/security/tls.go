@@ -98,8 +98,8 @@ func LoadClientTLSConfig(certFile, keyFile, caFile string) (credentials.Transpor
 	}
 
 	// Insecure (should not happen in production)
-	return credentials.NewTLS(&tls.Config{
-		InsecureSkipVerify: true,
+	return credentials.NewTLS(&tls.Config{ //nolint:gosec // G402: intentional fallback for dev/test environments
+		InsecureSkipVerify: true, //nolint:gosec // G402
 	}), nil
 }
 

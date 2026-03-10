@@ -111,7 +111,8 @@
       "Bash(find /home/khanh.dao/Projects/SideProjects/GoBlob/goblob -type d | while read dir; do if ! compgen -G \"$dir/*_test.go\" > /dev/null 2>&1 && ! compgen -G \"$dir/*_suite_test.go\" > /dev/null 2>&1; then echo \"$dir\"; fi; done | head -20)",
       "Bash(grep -n \"VolumeServerOption\\\\|type.*Option\" /home/khanh.dao/Projects/SideProjects/GoBlob/goblob/server/volume_server.go | head -20\ngrep -n \"VolumeServerOption\" /home/khanh.dao/Projects/SideProjects/GoBlob/goblob/server/*.go | grep \"type\\\\|struct\" | head)",
       "Bash(grep -n \"stats\\\\|grace\" /home/khanh.dao/Projects/SideProjects/GoBlob/docs/storage/storage-engine.md | head -10\ngrep -n \"stats\\\\|grace\" /home/khanh.dao/Projects/SideProjects/GoBlob/docs/topology/topology-and-replication.md | head -10\ngrep -n \"grace\\\\|stats\" /home/khanh.dao/Projects/SideProjects/GoBlob/docs/README.md | head -10)",
-      "Bash(find /home/khanh.dao/Projects/SideProjects/GoBlob/goblob -name \"*.go\" -type f | xargs -I {} bash -c 'echo \"=== {} ===\" && head -5 {}'  2>/dev/null | grep -A 5 \"^=== \" | head -150)"
+      "Bash(find /home/khanh.dao/Projects/SideProjects/GoBlob/goblob -name \"*.go\" -type f | xargs -I {} bash -c 'echo \"=== {} ===\" && head -5 {}'  2>/dev/null | grep -A 5 \"^=== \" | head -150)",
+      "Bash(grep -r '\"math/rand\"' goblob/ 2>/dev/null && echo \"found\" || echo \"none\")"
     ]
   }
 }

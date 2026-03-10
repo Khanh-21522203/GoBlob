@@ -46,6 +46,7 @@ func startMasterRuntime(opt *server.MasterOption) (*masterRuntime, error) {
 			MaxBodyBytes: 100 * 1024 * 1024,
 			Burst:        200,
 		}),
+		ReadHeaderTimeout: 30 * time.Second,
 	}
 	go func() { _ = httpServer.Serve(httpLis) }()
 	go func() { _ = grpcServer.Serve(grpcLis) }()
@@ -101,6 +102,7 @@ func startVolumeRuntime(opt *server.VolumeServerOption) (*volumeRuntime, error) 
 			MaxBodyBytes: opt.FileSizeLimitMB * 1024 * 1024,
 			Burst:        200,
 		}),
+		ReadHeaderTimeout: 30 * time.Second,
 	}
 	go func() { _ = adminServer.Serve(adminLis) }()
 	go func() { _ = grpcServer.Serve(grpcLis) }()
@@ -179,6 +181,7 @@ func startFilerRuntime(opt *server.FilerOption) (*filerRuntime, error) {
 			MaxBodyBytes: int64(opt.MaxFileSizeMB) * 1024 * 1024,
 			Burst:        150,
 		}),
+		ReadHeaderTimeout: 30 * time.Second,
 	}
 	go func() { _ = httpServer.Serve(httpLis) }()
 	go func() { _ = grpcServer.Serve(grpcLis) }()
@@ -222,6 +225,7 @@ func startHTTPRuntime(host string, port int, handler http.Handler, stopFn func()
 			MaxBodyBytes: 100 * 1024 * 1024,
 			Burst:        200,
 		}),
+		ReadHeaderTimeout: 30 * time.Second,
 	}
 	go func() { _ = httpServer.Serve(lis) }()
 	return &httpRuntime{httpServer: httpServer, stopFn: stopFn}, nil

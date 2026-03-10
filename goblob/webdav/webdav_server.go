@@ -31,7 +31,11 @@ func NewServer(addr string, fs xwebdav.FileSystem, username, password string, mi
 	if middleware != nil {
 		s.handler = middleware(s.handler)
 	}
-	s.httpSrv = &http.Server{Addr: addr, Handler: s.handler}
+	s.httpSrv = &http.Server{
+		Addr:              addr,
+		Handler:           s.handler,
+		ReadHeaderTimeout: 30 * time.Second,
+	}
 	return s
 }
 
