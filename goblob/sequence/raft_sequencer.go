@@ -2,9 +2,11 @@ package sequence
 
 import (
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
+	"GoBlob/goblob/obs"
 	"GoBlob/goblob/raft"
 )
 
@@ -21,10 +23,11 @@ type RaftSequencer struct {
 	wrapped      *FileSequencer
 	raftServer   RaftApplier
 	lastSyncedId uint64
+	logger       *slog.Logger
 }
 
 // NewRaftSequencer creates a new RaftSequencer.
-func NewRaftSequencer(cfg *Config, raftServer RaftApplier) (*RaftSequencer, error) {
+func NewRaftSequencer(cfg *Config, raftServer RaftApplier, logger *slog.Logger) (*RaftSequencer, error) {
 	fileSeq, err := NewFileSequencer(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create file sequencer: %w", err)
@@ -34,6 +37,7 @@ func NewRaftSequencer(cfg *Config, raftServer RaftApplier) (*RaftSequencer, erro
 		wrapped:      fileSeq,
 		raftServer:   raftServer,
 		lastSyncedId: fileSeq.GetMax(),
+		logger:       logger,
 	}, nil
 }
 
@@ -55,9 +59,10 @@ func (rs *RaftSequencer) NextFileId(count uint64) uint64 {
 	if newMax > rs.lastSyncedId {
 		cmd := raft.MaxFileIdCommand{MaxFileId: newMax}
 		if err := rs.raftServer.Apply(cmd, 5*time.Second); err != nil {
-			// Log and continue — the file sequencer still prevents local reuse.
-			// On failover, the new leader will use Barrier + SetMax from heartbeats.
-			_ = err
+			// The file sequencer still prevents local ID reuse; on failover the new
+			// leader calls Barrier + SyncToRaft to recover the high-water mark.
+			rs.logger.Warn("raft apply failed; sequencer continues locally", "err", err)
+			obs.RaftApplyErrors.Inc()
 		} else {
 			rs.lastSyncedId = newMax
 		}

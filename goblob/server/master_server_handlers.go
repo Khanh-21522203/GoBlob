@@ -292,6 +292,56 @@ func (ms *MasterServer) handleReady(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("READY"))
 }
 
+// handleAddPeer handles POST /cluster/peer — adds a new voter to the Raft cluster.
+func (ms *MasterServer) handleAddPeer(w http.ResponseWriter, r *http.Request) {
+	if ms.Raft == nil || !ms.Raft.IsLeader() {
+		ms.proxyToLeader(w, r)
+		return
+	}
+	var req struct {
+		Addr string `json:"addr"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Addr == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "addr required"})
+		return
+	}
+	if err := ms.Raft.AddPeer(req.Addr); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "addr": req.Addr})
+}
+
+// handleRemovePeer handles DELETE /cluster/peer — removes a server from the Raft cluster.
+func (ms *MasterServer) handleRemovePeer(w http.ResponseWriter, r *http.Request) {
+	if ms.Raft == nil || !ms.Raft.IsLeader() {
+		ms.proxyToLeader(w, r)
+		return
+	}
+	var req struct {
+		Addr string `json:"addr"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Addr == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "addr required"})
+		return
+	}
+	if err := ms.Raft.RemovePeer(req.Addr); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "addr": req.Addr})
+}
+
 // proxyToLeader proxies the request to the Raft leader.
 func (ms *MasterServer) proxyToLeader(w http.ResponseWriter, r *http.Request) {
 	leader := ms.Raft.LeaderAddress()

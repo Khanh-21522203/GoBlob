@@ -114,7 +114,9 @@
       "Bash(find /home/khanh.dao/Projects/SideProjects/GoBlob/goblob -name \"*.go\" -type f | xargs -I {} bash -c 'echo \"=== {} ===\" && head -5 {}'  2>/dev/null | grep -A 5 \"^=== \" | head -150)",
       "Bash(grep -r '\"math/rand\"' goblob/ 2>/dev/null && echo \"found\" || echo \"none\")",
       "Bash(find /home/khanh.dao/Projects/SideProjects/GoBlob/goblob/pb -name \"*.pb.go\" -o -name \"*_grpc.pb.go\" 2>/dev/null | head -20)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(find /home/khanh.dao/Projects/SideProjects/GoBlob/goblob -type f -name \"*.go\" -exec wc -l {} +)",
+      "Bash(wc:*)"
     ]
   }
 }

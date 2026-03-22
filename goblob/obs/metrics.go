@@ -63,6 +63,44 @@ var (
 		Help:      "Free bytes by volume disk location.",
 	}, []string{"directory"})
 
+	// Raft metrics.
+	RaftCommitIndex = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: "goblob",
+		Subsystem: "raft",
+		Name:      "commit_index",
+		Help:      "Raft commit index of this node.",
+	})
+	RaftLastLogIndex = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: "goblob",
+		Subsystem: "raft",
+		Name:      "last_log_index",
+		Help:      "Index of the last log entry on this node.",
+	})
+	RaftLastSnapshotIndex = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: "goblob",
+		Subsystem: "raft",
+		Name:      "last_snapshot_index",
+		Help:      "Index of the last snapshot on this node.",
+	})
+	RaftNumPeers = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: "goblob",
+		Subsystem: "raft",
+		Name:      "num_peers",
+		Help:      "Number of peers in the Raft cluster excluding self.",
+	})
+	RaftLastContactSeconds = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: "goblob",
+		Subsystem: "raft",
+		Name:      "last_contact_seconds",
+		Help:      "Seconds since last contact with the Raft leader. 0 if this node is leader, -1 if never.",
+	})
+	RaftApplyErrors = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: "goblob",
+		Subsystem: "raft",
+		Name:      "apply_errors_total",
+		Help:      "Total number of failed Raft Apply calls from the sequencer.",
+	})
+
 	// Filer metrics.
 	FilerRequestsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "goblob",
@@ -89,6 +127,12 @@ func registerMetrics() {
 			MasterLeadershipGauge,
 			MasterVolumeCount,
 			MasterAssignRequests,
+			RaftCommitIndex,
+			RaftLastLogIndex,
+			RaftLastSnapshotIndex,
+			RaftNumPeers,
+			RaftLastContactSeconds,
+			RaftApplyErrors,
 			VolumeServerNeedleWriteBytes,
 			VolumeServerNeedleReadBytes,
 			VolumeServerNeedleWriteLatency,

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -156,7 +157,7 @@ func NewMasterServerWithGRPC(mux *http.ServeMux, grpcServer *grpc.Server, opt *M
 	}
 	ms.Raft = raftServer
 
-	raftSequencer, err := sequence.NewRaftSequencer(seqConfig, raftServer)
+	raftSequencer, err := sequence.NewRaftSequencer(seqConfig, raftServer, logger)
 	if err != nil {
 		cancel()
 		_ = raftServer.Shutdown()
@@ -196,6 +197,7 @@ func NewMasterServerWithGRPC(mux *http.ServeMux, grpcServer *grpc.Server, opt *M
 
 	// Start background goroutines
 	go ms.processVolumeGrowRequests()
+	go ms.raftStatsWorker()
 
 	return ms, nil
 }
@@ -210,6 +212,8 @@ func (ms *MasterServer) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /cluster/healthz", ms.handleHealthz)
 	mux.HandleFunc("GET /health", ms.handleHealthz)
 	mux.HandleFunc("GET /ready", ms.handleReady)
+	mux.HandleFunc("POST /cluster/peer", ms.handleAddPeer)
+	mux.HandleFunc("DELETE /cluster/peer", ms.handleRemovePeer)
 }
 
 // Shutdown gracefully shuts down the master server.
@@ -256,6 +260,45 @@ func (ms *MasterServer) processVolumeGrowRequests() {
 				continue
 			}
 			ms.logger.Info("volume growth completed", "collection", req.Collection, "created", created)
+		}
+	}
+}
+
+// raftStatsWorker periodically reads Raft stats and updates Prometheus gauges.
+func (ms *MasterServer) raftStatsWorker() {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ms.ctx.Done():
+			return
+		case <-ticker.C:
+			if ms.Raft == nil {
+				continue
+			}
+			stats := ms.Raft.Stats()
+			if v, err := strconv.ParseFloat(stats["commit_index"], 64); err == nil {
+				obs.RaftCommitIndex.Set(v)
+			}
+			if v, err := strconv.ParseFloat(stats["last_log_index"], 64); err == nil {
+				obs.RaftLastLogIndex.Set(v)
+			}
+			if v, err := strconv.ParseFloat(stats["last_snapshot_index"], 64); err == nil {
+				obs.RaftLastSnapshotIndex.Set(v)
+			}
+			if v, err := strconv.ParseFloat(stats["num_peers"], 64); err == nil {
+				obs.RaftNumPeers.Set(v)
+			}
+			switch lc := stats["last_contact"]; lc {
+			case "", "0s":
+				obs.RaftLastContactSeconds.Set(0)
+			case "never":
+				obs.RaftLastContactSeconds.Set(-1)
+			default:
+				if d, err := time.ParseDuration(lc); err == nil {
+					obs.RaftLastContactSeconds.Set(d.Seconds())
+				}
+			}
 		}
 	}
 }

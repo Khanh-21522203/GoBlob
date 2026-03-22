@@ -13,3 +13,5 @@ vendor/
 # Test artifacts
 *.test
 coverage.out
+
+.claude/

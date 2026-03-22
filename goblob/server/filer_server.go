@@ -13,8 +13,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"google.golang.org/grpc"
 	"log/slog"
+
+	"google.golang.org/grpc"
 
 	"GoBlob/goblob/config"
 	"GoBlob/goblob/filer"
@@ -245,7 +246,7 @@ func (fs *FilerServer) handleFileUpload(w http.ResponseWriter, r *http.Request) 
 
 	// Return success
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"name": path,
 		"size": len(data),
 	})
@@ -290,7 +291,7 @@ func (fs *FilerServer) handleFileDownload(w http.ResponseWriter, r *http.Request
 
 	// Chunked files not supported yet (Phase 5)
 	w.WriteHeader(http.StatusNotImplemented)
-	json.NewEncoder(w).Encode(map[string]string{"error": "chunked files not supported yet"})
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": "chunked files not supported yet"})
 }
 
 // handleDeleteEntry handles DELETE /{path} requests.
