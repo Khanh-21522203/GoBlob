@@ -7,7 +7,7 @@ services:
       - "19333:19333"
       - "9090:9090"
     volumes:
-      - master-data:/data/master
+      - ./data/master:/data/master
 
   volume:
     build: .
@@ -19,7 +19,7 @@ services:
     depends_on:
       - master
     volumes:
-      - volume-data:/data/volume
+      - ./data/volume:/data/volume
 
   filer:
     build: .
@@ -31,7 +31,7 @@ services:
     depends_on:
       - master
     volumes:
-      - filer-data:/data/filer
+      - ./data/filer:/data/filer
 
   s3:
     build: .
@@ -41,8 +41,3 @@ services:
       - "9093:9093"
     depends_on:
       - filer
-
-volumes:
-  master-data: {}
-  volume-data: {}
-  filer-data: {}

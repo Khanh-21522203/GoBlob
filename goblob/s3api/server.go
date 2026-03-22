@@ -84,7 +84,16 @@ func NewS3ApiServer(mux *http.ServeMux, opt *S3ApiServerOption) (*S3ApiServer, e
 }
 
 // Shutdown gracefully stops S3 API server resources.
-func (s *S3ApiServer) Shutdown() {}
+func (s *S3ApiServer) Shutdown() {
+	if s == nil {
+		return
+	}
+	// IAM and quota managers are stateless (no background goroutines); drop references
+	// so in-memory identity data is GC'd.
+	s.iam = nil
+	s.quota = nil
+	s.filerClient = nil
+}
 
 // ReloadIAM allows tests or integrations to refresh IAM config from filer.
 func (s *S3ApiServer) ReloadIAM(ctx context.Context) error {

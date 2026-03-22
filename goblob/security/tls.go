@@ -1,10 +1,16 @@
 package security
 
 import (
+	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
+	"math/big"
 	"os"
 	"time"
 
@@ -103,12 +109,49 @@ func LoadClientTLSConfig(certFile, keyFile, caFile string) (credentials.Transpor
 	}), nil
 }
 
-// GenerateSelfSignedCert generates a self-signed certificate for testing.
+// GenerateSelfSignedCert generates a self-signed ECDSA P-256 certificate for testing.
 // This should NOT be used in production.
+// Returns certPEM, keyPEM, err.
 func GenerateSelfSignedCert() ([]byte, []byte, error) {
-	// This is a placeholder - in a real implementation, use
-	// crypto/tls/generate_cert.go or similar
-	return nil, nil, fmt.Errorf("self-signed cert generation not implemented")
+	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, nil, fmt.Errorf("generate ecdsa key: %w", err)
+	}
+
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return nil, nil, fmt.Errorf("generate serial: %w", err)
+	}
+
+	tmpl := x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: "goblob-test"},
+		NotBefore:    time.Now().Add(-time.Minute),
+		NotAfter:     time.Now().Add(365 * 24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IsCA:         true,
+	}
+
+	certDER, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &privKey.PublicKey, privKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("create certificate: %w", err)
+	}
+
+	keyDER, err := x509.MarshalECPrivateKey(privKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal ec key: %w", err)
+	}
+
+	var certBuf, keyBuf bytes.Buffer
+	if err := pem.Encode(&certBuf, &pem.Block{Type: "CERTIFICATE", Bytes: certDER}); err != nil {
+		return nil, nil, fmt.Errorf("encode cert pem: %w", err)
+	}
+	if err := pem.Encode(&keyBuf, &pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}); err != nil {
+		return nil, nil, fmt.Errorf("encode key pem: %w", err)
+	}
+
+	return certBuf.Bytes(), keyBuf.Bytes(), nil
 }
 
 // CheckCertExpiry checks if a certificate file is expired or will expire soon.

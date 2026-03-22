@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,9 +19,11 @@ import (
 	"google.golang.org/grpc"
 
 	"GoBlob/goblob/config"
+	"GoBlob/goblob/core/types"
 	"GoBlob/goblob/filer"
 	"GoBlob/goblob/log_buffer"
 	"GoBlob/goblob/obs"
+	"GoBlob/goblob/operation"
 	"GoBlob/goblob/pb/filer_pb"
 	"GoBlob/goblob/pb/iam_pb"
 	"GoBlob/goblob/security"
@@ -55,12 +58,20 @@ func NewFilerServer(defaultMux, readonlyMux *http.ServeMux, grpcServer *grpc.Ser
 	filerGuard := security.NewGuard("", "", "")
 	volumeGuard := security.NewGuard("", "", "")
 
+	// notifyFn is set after filerServer is constructed so it can reference listenersCond.
+	// Placeholder until wired below.
+	var notifyFn func()
+
 	// Create log buffer
 	logBuf := log_buffer.NewLogBuffer(
 		3,           // maxSegmentCount
 		2*1024*1024, // maxSegmentBytes
 		time.Duration(opt.LogFlushIntervalSeconds)*time.Second, // flushInterval
-		nil, // notifyFn (set later)
+		func() {
+			if notifyFn != nil {
+				notifyFn()
+			}
+		},
 		nil, // flushFn (set later)
 		logger,
 	)
@@ -83,6 +94,12 @@ func NewFilerServer(defaultMux, readonlyMux *http.ServeMux, grpcServer *grpc.Ser
 	}
 	filerServer.listenersCond = sync.NewCond(&filerServer.listenersMu)
 	filerServer.inFlightLimitCond = sync.NewCond(&sync.Mutex{})
+
+	// Wire notifyFn: broadcast listenersCond whenever a new event is appended to the
+	// log buffer so SubscribeMetadata subscribers wake up promptly instead of polling.
+	notifyFn = func() {
+		filerServer.listenersCond.Broadcast()
+	}
 
 	// Register HTTP routes
 	filerServer.registerRoutes(defaultMux, readonlyMux)
@@ -121,11 +138,8 @@ func (fs *FilerServer) SetStore(store filer.FilerStore) {
 
 // Start starts the filer server.
 func (fs *FilerServer) Start() {
-	// Start log buffer flush daemon
+	// Start log buffer flush daemon; notifyFn will wake gRPC subscribers on each append.
 	fs.logBuffer.StartFlushDaemon(fs.ctx)
-
-	// Start lightweight metadata aggregation loop for listener fan-out bookkeeping.
-	go fs.metadataAggregatorLoop()
 }
 
 // Shutdown gracefully shuts down the filer server.
@@ -194,61 +208,77 @@ func (fs *FilerServer) handleFileUpload(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Get path from URL
-	path := normalizeAbsolutePath(r.URL.Path)
-
-	// TODO: wire storage/dedup.Deduplicator here once chunked volume storage is
-	// implemented. The dedup package is ready; it requires a volume fid per chunk
-	// to store hash→fid mappings. Inline content (<64KB) does not benefit from it.
-
-	// For Phase 4, only support inline storage (<64KB)
-	if r.ContentLength > 64*1024 {
-		w.WriteHeader(http.StatusNotImplemented)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "chunked files not supported yet"})
-		return
-	}
-
-	// Read data
-	data, err := io.ReadAll(r.Body)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
-		return
-	}
+	filePath := normalizeAbsolutePath(r.URL.Path)
 	defer r.Body.Close()
 
-	// Create entry
+	const inlineLimit = 64 * 1024
+
 	entry := &filer.Entry{
-		FullPath: filer.FullPath(path),
+		FullPath: filer.FullPath(filePath),
 		Attr: filer.Attr{
-			Mode:     0644,
-			Mtime:    time.Now(),
-			FileSize: uint64(len(data)),
-			Mime:     r.Header.Get("Content-Type"),
+			Mode:  0644,
+			Mtime: time.Now(),
+			Mime:  r.Header.Get("Content-Type"),
 		},
-		Content: data,
+	}
+
+	if r.ContentLength > inlineLimit || r.ContentLength < 0 {
+		// Large file: split into chunks and store on volume servers.
+		if len(fs.filer.MasterAddresses) == 0 {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "no master addresses configured"})
+			return
+		}
+		masterAddr := fs.filer.MasterAddresses[0]
+		opt := &operation.UploadOption{Master: masterAddr}
+		results, err := operation.ChunkUpload(fs.ctx, masterAddr, r.Body, r.ContentLength, 8*1024*1024, opt)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		chunks := make([]*filer.FileChunk, 0, len(results))
+		var totalSize int64
+		for _, cr := range results {
+			chunks = append(chunks, &filer.FileChunk{
+				FileId:       cr.FileId,
+				Offset:       cr.Offset,
+				Size:         cr.Size,
+				ModifiedTsNs: cr.ModifiedTsNs,
+				ETag:         cr.ETag,
+			})
+			totalSize += cr.Size
+		}
+		entry.Chunks = chunks
+		entry.Attr.FileSize = uint64(totalSize)
+	} else {
+		// Small file: store inline.
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		entry.Content = data
+		entry.Attr.FileSize = uint64(len(data))
 	}
 
 	// Create entry in store
-	err = fs.filer.CreateEntry(fs.ctx, entry)
+	err := fs.filer.CreateEntry(fs.ctx, entry)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 
-	// Append to log buffer
-	fs.logBuffer.AppendEntry([]byte(fmt.Sprintf("create:%s", path)))
-
-	// Notify listeners
-	fs.listenersMu.Lock()
-	fs.listenersCond.Broadcast()
-	fs.listenersMu.Unlock()
+	// Append to log buffer (notifyFn broadcasts listenersCond automatically).
+	fs.logBuffer.AppendEntry([]byte(fmt.Sprintf("create:%s", filePath)))
 
 	// Return success
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"name": path,
-		"size": len(data),
+		"name": filePath,
+		"size": entry.Attr.FileSize,
 	})
 }
 
@@ -265,9 +295,9 @@ func (fs *FilerServer) handleFileDownload(w http.ResponseWriter, r *http.Request
 	}
 
 	// Get path from URL
-	path := normalizeAbsolutePath(r.URL.Path)
+	filePath := normalizeAbsolutePath(r.URL.Path)
 
-	entry, err := fs.filer.FindEntry(fs.ctx, filer.FullPath(path))
+	entry, err := fs.filer.FindEntry(fs.ctx, filer.FullPath(filePath))
 	if err != nil {
 		if err == filer.ErrNotFound {
 			w.WriteHeader(http.StatusNotFound)
@@ -277,21 +307,70 @@ func (fs *FilerServer) handleFileDownload(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Check for inline content
+	if entry.Attr.Mime != "" {
+		w.Header().Set("Content-Type", entry.Attr.Mime)
+	}
+	w.Header().Set("Last-Modified", entry.Attr.Mtime.UTC().Format(http.TimeFormat))
+
+	// Inline content (small files).
 	if len(entry.Content) > 0 {
-		// Serve inline content
-		if entry.Attr.Mime != "" {
-			w.Header().Set("Content-Type", entry.Attr.Mime)
-		}
 		w.Header().Set("Content-Length", strconv.FormatInt(int64(len(entry.Content)), 10))
-		w.Header().Set("Last-Modified", entry.Attr.Mtime.UTC().Format(http.TimeFormat))
 		_, _ = w.Write(entry.Content)
 		return
 	}
 
-	// Chunked files not supported yet (Phase 5)
-	w.WriteHeader(http.StatusNotImplemented)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": "chunked files not supported yet"})
+	// Chunked content: reassemble from volume servers in chunk order.
+	if len(entry.Chunks) > 0 {
+		if len(fs.filer.MasterAddresses) == 0 {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "no master addresses configured"})
+			return
+		}
+		masterAddr := fs.filer.MasterAddresses[0]
+
+		chunks := make([]*filer.FileChunk, len(entry.Chunks))
+		copy(chunks, entry.Chunks)
+		sort.Slice(chunks, func(i, j int) bool { return chunks[i].Offset < chunks[j].Offset })
+
+		w.Header().Set("Content-Length", strconv.FormatUint(entry.Attr.FileSize, 10))
+		client := &http.Client{Timeout: 30 * time.Second}
+
+		for _, chunk := range chunks {
+			// Parse volumeId from FileId ("volumeId,needleId").
+			parts := strings.SplitN(chunk.FileId, ",", 2)
+			if len(parts) != 2 {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			vidU, err := strconv.ParseUint(parts[0], 10, 32)
+			if err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			locs, err := operation.LookupVolumeId(fs.ctx, masterAddr, types.VolumeId(vidU))
+			if err != nil || len(locs) == 0 {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			chunkURL := "http://" + locs[0].Url + "/" + chunk.FileId
+			req, err := http.NewRequestWithContext(fs.ctx, http.MethodGet, chunkURL, nil)
+			if err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			resp, err := client.Do(req)
+			if err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			_, _ = io.Copy(w, resp.Body)
+			_ = resp.Body.Close()
+		}
+		return
+	}
+
+	// Empty file.
+	w.Header().Set("Content-Length", "0")
 }
 
 // handleDeleteEntry handles DELETE /{path} requests.
@@ -307,10 +386,10 @@ func (fs *FilerServer) handleDeleteEntry(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Get path from URL
-	path := normalizeAbsolutePath(r.URL.Path)
+	filePath := normalizeAbsolutePath(r.URL.Path)
 
 	// Delete entry
-	err := fs.filer.DeleteEntry(fs.ctx, filer.FullPath(path))
+	err := fs.filer.DeleteEntry(fs.ctx, filer.FullPath(filePath))
 	if err != nil {
 		if err == filer.ErrNotFound {
 			w.WriteHeader(http.StatusNotFound)
@@ -321,7 +400,7 @@ func (fs *FilerServer) handleDeleteEntry(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Append to log buffer
-	fs.logBuffer.AppendEntry([]byte(fmt.Sprintf("delete:%s", path)))
+	fs.logBuffer.AppendEntry([]byte(fmt.Sprintf("delete:%s", filePath)))
 
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -357,34 +436,6 @@ func normalizeAbsolutePath(raw string) string {
 		return "/"
 	}
 	return path.Clean("/" + raw)
-}
-
-func (fs *FilerServer) metadataAggregatorLoop() {
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
-
-	sinceNs := int64(0)
-	for {
-		select {
-		case <-fs.ctx.Done():
-			return
-		case <-ticker.C:
-			result := fs.logBuffer.ReadFromBuffer(sinceNs)
-			if len(result.Events) == 0 {
-				continue
-			}
-			if result.NextTs > sinceNs {
-				sinceNs = result.NextTs
-			}
-
-			fs.listenersMu.Lock()
-			listenerCount := len(fs.knownListeners)
-			fs.listenersMu.Unlock()
-			if listenerCount > 0 {
-				fs.logger.Debug("metadata events aggregated", "events", len(result.Events), "listeners", listenerCount)
-			}
-		}
-	}
 }
 
 type metricsStatusWriter struct {

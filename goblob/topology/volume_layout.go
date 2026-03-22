@@ -30,6 +30,8 @@ type VolumeGrowOption struct {
 	ReplicaPlacement types.ReplicaPlacement
 	Ttl              string
 	DiskType         types.DiskType
+	DataCenter       string // optional: filter volumes to nodes in this datacenter
+	Rack             string // optional: filter volumes to nodes in this rack (requires DataCenter)
 }
 
 // NewVolumeLayout creates a new VolumeLayout.
@@ -118,17 +120,42 @@ func (vl *VolumeLayout) LookupVolume(vid uint32) ([]*VolumeLocation, bool) {
 
 // PickForWrite selects a writable volume for a new upload.
 // Returns the VolumeId and all replica locations, or an error if none available.
-func (vl *VolumeLayout) PickForWrite(_ *VolumeGrowOption) (uint32, []*VolumeLocation, error) {
+// If opt specifies DataCenter or Rack, only volumes with at least one replica
+// on a matching node are considered.
+func (vl *VolumeLayout) PickForWrite(opt *VolumeGrowOption) (uint32, []*VolumeLocation, error) {
 	var vid uint32
 	var locs []*VolumeLocation
 	vl.writableVolumes.Range(func(v uint32, ls []*VolumeLocation) bool {
-		// Skip volumes whose DataNode has gone stale.
-		if len(ls) > 0 && ls[0].DataNode != nil && !ls[0].DataNode.IsAlive() {
+		if len(ls) == 0 {
 			return true
+		}
+		// Skip volumes whose primary DataNode has gone stale.
+		if ls[0].DataNode != nil && !ls[0].DataNode.IsAlive() {
+			return true
+		}
+		// Apply datacenter / rack affinity filter when requested.
+		if opt != nil && opt.DataCenter != "" {
+			matched := false
+			for _, loc := range ls {
+				if loc.DataNode == nil {
+					continue
+				}
+				if loc.DataNode.GetDataCenter() != opt.DataCenter {
+					continue
+				}
+				if opt.Rack != "" && loc.DataNode.GetRack() != opt.Rack {
+					continue
+				}
+				matched = true
+				break
+			}
+			if !matched {
+				return true // skip this volume
+			}
 		}
 		vid = v
 		locs = ls
-		return false // stop after first candidate
+		return false // stop after first matching candidate
 	})
 	if vid == 0 {
 		return 0, nil, fmt.Errorf("no writable volume available")

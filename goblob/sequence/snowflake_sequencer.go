@@ -81,6 +81,7 @@ func (s *SnowflakeSequencer) NextFileId(count uint64) uint64 {
 				now = s.currentTime()
 			}
 			s.sequence = 0
+			s.lastTime = now // advance lastTime so the next call doesn't reset sequence again
 		}
 	case now > s.lastTime:
 		s.sequence = 0

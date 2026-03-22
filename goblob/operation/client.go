@@ -22,8 +22,20 @@ const (
 	initialRetryBackoff   = 500 * time.Millisecond
 )
 
+// sharedHTTPClient is a package-level singleton so that its underlying
+// http.Transport (and the TCP connection pool it manages) is reused across
+// all operation calls instead of being discarded after every request.
+var sharedHTTPClient = &http.Client{
+	Timeout: defaultHTTPTimeout,
+	Transport: &http.Transport{
+		MaxIdleConns:        256,
+		MaxIdleConnsPerHost: 64,
+		IdleConnTimeout:     90 * time.Second,
+	},
+}
+
 func defaultHTTPClient() *http.Client {
-	return &http.Client{Timeout: defaultHTTPTimeout}
+	return sharedHTTPClient
 }
 
 func ensureHTTPPrefix(addr string) string {

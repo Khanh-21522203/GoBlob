@@ -12,12 +12,22 @@ import (
 	"net/url"
 	"path"
 	"strings"
+	"sync"
 )
+
+// uploadBufPool recycles the bytes.Buffer used to build each multipart body,
+// avoiding a fresh heap allocation on every Upload call.
+var uploadBufPool = sync.Pool{
+	New: func() any { return new(bytes.Buffer) },
+}
 
 // Upload sends data to a volume server.
 func Upload(ctx context.Context, uploadURL, filename string, data io.Reader, size int64, isGzip bool, mimeType string, pairMap map[string]string, jwt string) (*UploadResult, error) {
-	var buf bytes.Buffer
-	writer := multipart.NewWriter(&buf)
+	buf := uploadBufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer uploadBufPool.Put(buf)
+
+	writer := multipart.NewWriter(buf)
 
 	fieldName := "file"
 	if filename == "" {
@@ -39,7 +49,7 @@ func Upload(ctx context.Context, uploadURL, filename string, data io.Reader, siz
 		return nil, fmt.Errorf("close multipart writer: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, ensureHTTPPrefix(uploadURL), &buf)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, ensureHTTPPrefix(uploadURL), buf)
 	if err != nil {
 		return nil, fmt.Errorf("build upload request: %w", err)
 	}

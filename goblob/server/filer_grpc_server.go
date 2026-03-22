@@ -334,7 +334,15 @@ func (s *FilerGRPCServer) SubscribeMetadata(req *filer_pb.SubscribeMetadataReque
 
 		result := s.fs.logBuffer.ReadFromBuffer(sinceNs)
 		if len(result.Events) == 0 {
-			time.Sleep(200 * time.Millisecond)
+			// Wait for a notify from the log buffer instead of busy-sleeping.
+			// listenersCond is broadcast by notifyFn whenever a new entry is appended.
+			s.fs.listenersMu.Lock()
+			// Re-check after acquiring the lock to avoid missing a broadcast that
+			// arrived between the ReadFromBuffer call and the Wait below.
+			if len(s.fs.logBuffer.ReadFromBuffer(sinceNs).Events) == 0 {
+				s.fs.listenersCond.Wait()
+			}
+			s.fs.listenersMu.Unlock()
 			continue
 		}
 		for _, evt := range result.Events {

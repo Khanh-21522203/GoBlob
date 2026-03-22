@@ -10,6 +10,9 @@ vendor/
 .vscode/
 *.swp
 
+# Data directories
+data/
+
 # Test artifacts
 *.test
 coverage.out

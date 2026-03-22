@@ -87,8 +87,8 @@ func (ms *MasterServer) handleAssign(w http.ResponseWriter, r *http.Request) {
 	}
 	replicaPlacement := types.ParseReplicaPlacementString(replication)
 	ttl := q.Get("ttl")
-	_ = q.Get("dataCenter") // not used yet
-	_ = q.Get("rack")       // not used yet
+	dataCenter := q.Get("dataCenter")
+	rack := q.Get("rack")
 	diskType := q.Get("diskType")
 
 	// Get or create volume layout
@@ -100,6 +100,8 @@ func (ms *MasterServer) handleAssign(w http.ResponseWriter, r *http.Request) {
 		ReplicaPlacement: replicaPlacement,
 		Ttl:              ttl,
 		DiskType:         types.DiskType(diskType),
+		DataCenter:       dataCenter,
+		Rack:             rack,
 	})
 	if err != nil || len(locations) == 0 {
 		// No writable volumes - send growth request

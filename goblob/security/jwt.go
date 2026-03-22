@@ -1,6 +1,8 @@
 package security
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"time"
 
@@ -49,19 +51,16 @@ func VerifyJWT(tokenString, key string) (jwt.MapClaims, error) {
 	return nil, fmt.Errorf("invalid token")
 }
 
-// GenerateSigningKey generates a random signing key of the specified length.
-// For production, use a proper key management system.
+// GenerateSigningKey generates a cryptographically random signing key.
+// length is the number of random bytes before base64 encoding; the returned
+// string will be ~4/3 * length characters. Minimum 32 bytes.
 func GenerateSigningKey(length int) (string, error) {
 	if length <= 0 {
 		length = 32
 	}
-
-	// Simple implementation - in production use crypto/rand
 	key := make([]byte, length)
-	for i := range key {
-		// Use alphanumeric characters
-		key[i] = byte('a' + (i % 26))
+	if _, err := rand.Read(key); err != nil {
+		return "", fmt.Errorf("generate signing key: %w", err)
 	}
-
-	return string(key), nil
+	return base64.RawURLEncoding.EncodeToString(key), nil
 }

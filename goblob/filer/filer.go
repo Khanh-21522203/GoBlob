@@ -3,6 +3,7 @@ package filer
 import (
 	"context"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"GoBlob/goblob/operation"
@@ -10,15 +11,16 @@ import (
 
 // Filer provides filesystem-like metadata operations on volume storage.
 type Filer struct {
-	UniqueFilerId       int32
-	Store               FilerStore
-	MasterAddresses     []string
-	DirBucketsPath      string
-	LocalMetaLogBuffer  *LogBufferProxy
-	Dlm                 *DistributedLockManager
-	FilerConf           *FilerConf
-	ctx                 context.Context
-	logger              *slog.Logger
+	UniqueFilerId      int32
+	Store              FilerStore
+	MasterAddresses    []string
+	DirBucketsPath     string
+	LocalMetaLogBuffer *LogBufferProxy
+	Dlm                *DistributedLockManager
+	FilerConf          *FilerConf
+	ctx                context.Context
+	logger             *slog.Logger
+	masterIdx          atomic.Uint64 // round-robin index for master selection
 }
 
 // LogBufferProxy is a placeholder for the log_buffer.LogBuffer.
@@ -29,7 +31,7 @@ type LogBufferProxy struct{}
 func NewFiler(store FilerStore, masterAddrs []string, logger *slog.Logger) *Filer {
 	return &Filer{
 		UniqueFilerId:   generateUniqueFilerId(),
-		Store:          store,
+		Store:           store,
 		MasterAddresses: masterAddrs,
 		DirBucketsPath:  "/buckets",
 		FilerConf:       NewFilerConf(),
@@ -124,7 +126,7 @@ func (f *Filer) AssignVolume(ctx context.Context, collection, replication, ttl, 
 		return nil, ErrNoMasterConfigured
 	}
 
-	masterAddr := f.MasterAddresses[0] // TODO: load balance
+	masterAddr := f.MasterAddresses[f.masterIdx.Add(1)%uint64(len(f.MasterAddresses))]
 
 	opt := &operation.AssignOption{
 		Collection:  collection,
@@ -145,10 +147,10 @@ func generateUniqueFilerId() int32 {
 
 // Error definitions
 var (
-	ErrStoreNotConfigured  = &filerError{"store not configured"}
-	ErrParentNotFound      = &filerError{"parent directory not found"}
-	ErrParentNotDirectory  = &filerError{"parent is not a directory"}
-	ErrNoMasterConfigured   = &filerError{"no master addresses configured"}
+	ErrStoreNotConfigured = &filerError{"store not configured"}
+	ErrParentNotFound     = &filerError{"parent directory not found"}
+	ErrParentNotDirectory = &filerError{"parent is not a directory"}
+	ErrNoMasterConfigured = &filerError{"no master addresses configured"}
 )
 
 type filerError struct {

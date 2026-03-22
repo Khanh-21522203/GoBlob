@@ -2,6 +2,8 @@ package command
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -23,13 +25,38 @@ func TestVolumeTierUploadCommandValidation(t *testing.T) {
 		t.Fatal("expected unsupported cloud error")
 	}
 
+	// azure/gcs should return a clear not-implemented error
+	cmd = &VolumeTierUploadCommand{sourceDir: "/tmp", cloud: "azure", bucket: "b"}
+	if err := cmd.Run(context.Background(), nil); err == nil {
+		t.Fatal("expected azure not-implemented error")
+	}
+
+	// apply without s3-endpoint should error
 	cmd = &VolumeTierUploadCommand{sourceDir: "/tmp", cloud: "s3", bucket: "b", apply: true}
 	if err := cmd.Run(context.Background(), nil); err == nil {
-		t.Fatal("expected missing output dir error")
+		t.Fatal("expected missing s3-endpoint error")
 	}
 }
 
-func TestVolumeTierUploadCommandRun(t *testing.T) {
+func TestVolumeTierUploadCommandDryRun(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.dat"), []byte("hello"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Dry-run should succeed without an endpoint.
+	cmd := &VolumeTierUploadCommand{
+		sourceDir: dir,
+		cloud:     "s3",
+		bucket:    "archive",
+		apply:     false,
+	}
+	if err := cmd.Run(context.Background(), nil); err != nil {
+		t.Fatalf("dry-run: %v", err)
+	}
+}
+
+func TestVolumeTierUploadCommandS3Upload(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "a.dat"), []byte("hello"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
@@ -41,20 +68,30 @@ func TestVolumeTierUploadCommandRun(t *testing.T) {
 		t.Fatalf("WriteFile nested: %v", err)
 	}
 
+	// Fake S3-compatible server that accepts all PUTs.
+	var received []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			received = append(received, r.URL.Path)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}))
+	defer srv.Close()
+
 	cmd := &VolumeTierUploadCommand{
-		sourceDir: dir,
-		cloud:     "s3",
-		bucket:    "archive",
-		apply:     true,
-		outputDir: t.TempDir(),
+		sourceDir:   dir,
+		cloud:       "s3",
+		bucket:      "archive",
+		s3Endpoint:  srv.URL,
+		apply:       true,
+		concurrency: 2,
 	}
 	if err := cmd.Run(context.Background(), nil); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(cmd.outputDir, "s3", "archive", "a.dat")); err != nil {
-		t.Fatalf("expected copied file a.dat: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(cmd.outputDir, "s3", "archive", "nested", "b.dat")); err != nil {
-		t.Fatalf("expected copied file nested/b.dat: %v", err)
+	if len(received) != 2 {
+		t.Fatalf("expected 2 PUT requests, got %d: %v", len(received), received)
 	}
 }

@@ -261,19 +261,23 @@ func (vs *VolumeServer) handleWrite(w http.ResponseWriter, r *http.Request) {
 			filtered = append(filtered, addr)
 		}
 
-		var needleBuf bytes.Buffer
-		if _, err := n.WriteTo(&needleBuf, types.CurrentNeedleVersion); err == nil {
+		needleBuf := needleBufPool.Get().(*bytes.Buffer)
+		needleBuf.Reset()
+		if _, err := n.WriteTo(needleBuf, types.CurrentNeedleVersion); err == nil {
 			repErr := vs.replicator.ReplicatedWrite(r.Context(), replication.ReplicateRequest{
 				VolumeId:    fid.VolumeId,
 				NeedleId:    fid.NeedleId,
 				NeedleBytes: needleBuf.Bytes(),
 				JWTToken:    parseBearerToken(r.Header.Get("Authorization")),
 			}, filtered)
+			needleBufPool.Put(needleBuf)
 			if repErr != nil {
 				w.WriteHeader(http.StatusInternalServerError)
 				json.NewEncoder(w).Encode(map[string]string{"error": repErr.Error()})
 				return
 			}
+		} else {
+			needleBufPool.Put(needleBuf)
 		}
 	}
 
@@ -539,6 +543,12 @@ func (vs *VolumeServer) BuildHeartbeat() *master_pb.Heartbeat {
 }
 
 var errPayloadTooLarge = fmt.Errorf("payload too large")
+
+// needleBufPool recycles the bytes.Buffer used to serialise needles for
+// replication, avoiding a per-write heap allocation on the hot write path.
+var needleBufPool = sync.Pool{
+	New: func() any { return new(bytes.Buffer) },
+}
 
 func buildNeedleFromRequest(r *http.Request, fid types.FileId, maxFileSizeMB int64) (*needle.Needle, string, error) {
 	limit := maxFileSizeMB * 1024 * 1024
