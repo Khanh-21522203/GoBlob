@@ -104,11 +104,10 @@ func (t *Topology) processVolume(dataNode *DataNode, volInfo *master_pb.VolumeIn
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	// Get or create the volume layout for this collection
+	// Get or create the volume layout for this collection.
+	// Preserve the empty string as-is — normalising "" to "default" would
+	// create a different layout key than what handleAssign uses (collection "").
 	collection := volInfo.Collection
-	if collection == "" {
-		collection = "default"
-	}
 
 	// Convert replica placement uint32 to string (e.g., 0 -> "000")
 	replication := types.ParseReplicaPlacement(byte(volInfo.ReplicaPlacement)).String()
@@ -332,22 +331,24 @@ func (t *Topology) NextVolumeId() uint32 {
 	return vid
 }
 
-// AllocateNextVolumeId allocates the next volume ID, optionally validating it
-// (for example by replicating max volume ID via Raft) before committing.
-func (t *Topology) AllocateNextVolumeId(validate func(uint32) error) (uint32, error) {
+// AllocateNextVolumeId allocates the next volume ID, optionally persisting it
+// (for example by replicating max volume ID via Raft) after releasing the lock.
+// The lock is released before calling persist to prevent deadlocks when persist
+// calls back into topology methods (e.g. SetMaxVolumeId from the Raft FSM).
+func (t *Topology) AllocateNextVolumeId(persist func(uint32) error) (uint32, error) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
-
 	if t.nextVolumeId == 0 {
 		t.nextVolumeId = 1
 	}
 	vid := t.nextVolumeId
-	if validate != nil {
-		if err := validate(vid); err != nil {
+	t.nextVolumeId++
+	t.mu.Unlock()
+
+	if persist != nil {
+		if err := persist(vid); err != nil {
 			return 0, err
 		}
 	}
-	t.nextVolumeId++
 	return vid, nil
 }
 

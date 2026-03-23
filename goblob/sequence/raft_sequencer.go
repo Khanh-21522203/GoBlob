@@ -44,19 +44,22 @@ func NewRaftSequencer(cfg *Config, raftServer RaftApplier, logger *slog.Logger) 
 // NextFileId returns the start of a batch of count unique IDs.
 // Before allocating a new batch it submits a MaxFileIdCommand to the Raft log,
 // so all replicas know the high-water mark.
+//
+// The mutex is released before calling Raft.Apply to prevent a deadlock:
+// the Raft FSM calls SetMax which tries to acquire the same mutex.
 func (rs *RaftSequencer) NextFileId(count uint64) uint64 {
 	if count == 0 {
 		count = 1
 	}
 
 	rs.mu.Lock()
-	defer rs.mu.Unlock()
-
 	// The new high-water mark that will result from this allocation.
 	newMax := rs.wrapped.current + count
+	needSync := newMax > rs.lastSyncedId
+	rs.mu.Unlock() // release before Raft.Apply to avoid FSM deadlock
 
 	// Submit to Raft before allocating so replicas stay informed.
-	if newMax > rs.lastSyncedId {
+	if needSync {
 		cmd := raft.MaxFileIdCommand{MaxFileId: newMax}
 		if err := rs.raftServer.Apply(cmd, 5*time.Second); err != nil {
 			// The file sequencer still prevents local ID reuse; on failover the new
@@ -64,10 +67,16 @@ func (rs *RaftSequencer) NextFileId(count uint64) uint64 {
 			rs.logger.Warn("raft apply failed; sequencer continues locally", "err", err)
 			obs.RaftApplyErrors.Inc()
 		} else {
-			rs.lastSyncedId = newMax
+			rs.mu.Lock()
+			if newMax > rs.lastSyncedId {
+				rs.lastSyncedId = newMax
+			}
+			rs.mu.Unlock()
 		}
 	}
 
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
 	return rs.wrapped.NextFileId(count)
 }
 

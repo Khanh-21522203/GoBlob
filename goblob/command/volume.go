@@ -25,6 +25,7 @@ type VolumeCommand struct {
 	rack                      string
 	pushgatewayURL            string
 	pushgatewayJob            string
+	ratePerSecond             float64
 }
 
 func init() {
@@ -55,6 +56,7 @@ func (c *VolumeCommand) SetFlags(fs *flag.FlagSet) {
 	fs.StringVar(&c.rack, "rack", def.Rack, "rack")
 	fs.StringVar(&c.pushgatewayURL, "pushgatewayURL", "", "pushgateway base URL")
 	fs.StringVar(&c.pushgatewayJob, "pushgatewayJob", "goblob-volume", "pushgateway job name")
+	fs.Float64Var(&c.ratePerSecond, "ratePerSecond", 0, "per-IP HTTP rate limit (req/sec); 0 = default 200")
 }
 
 func (c *VolumeCommand) Run(ctx context.Context, args []string) error {
@@ -81,6 +83,7 @@ func (c *VolumeCommand) Run(ctx context.Context, args []string) error {
 	opt.DataCenter = c.dataCenter
 	opt.Rack = c.rack
 	opt.PublicUrl = fmt.Sprintf("%s:%d", c.host, c.port)
+	opt.RatePerSecond = c.ratePerSecond
 
 	rt, err := startVolumeRuntime(opt)
 	if err != nil {

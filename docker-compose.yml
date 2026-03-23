@@ -1,41 +1,115 @@
 services:
-  master:
+  master1:
     build: .
-    command: ["master", "-ip=0.0.0.0", "-port=9333", "-grpc.port=19333", "-mdir=/data/master", "-metricsPort=9090"]
+    hostname: master1
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - "/blob master -ip=$(hostname) -port=9333 -grpc.port=19333 -mdir=/data/master -metricsPort=9090 -maintenanceFiler=filer:8888 -ratePerSecond=100000 -peers=master1:9333,master2:9333,master3:9333"
     ports:
       - "9333:9333"
+      - "9334:9334"
       - "19333:19333"
       - "9090:9090"
     volumes:
-      - ./data/master:/data/master
+      - ./data/master1:/data/master
 
-  volume:
+  master2:
     build: .
-    command: ["volume", "-ip=0.0.0.0", "-port=8080", "-grpc.port=18080", "-masters=master:9333", "-dir=/data/volume", "-metricsPort=9091"]
+    hostname: master2
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - "/blob master -ip=$(hostname) -port=9333 -grpc.port=19333 -mdir=/data/master -metricsPort=9095 -maintenanceFiler=filer:8888 -ratePerSecond=100000 -peers=master1:9333,master2:9333,master3:9333"
+    ports:
+      - "9335:9333"
+      - "9336:9334"
+      - "19335:19333"
+      - "9095:9095"
+    volumes:
+      - ./data/master2:/data/master
+    depends_on:
+      - master1
+
+  master3:
+    build: .
+    hostname: master3
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - "/blob master -ip=$(hostname) -port=9333 -grpc.port=19333 -mdir=/data/master -metricsPort=9096 -maintenanceFiler=filer:8888 -ratePerSecond=100000 -peers=master1:9333,master2:9333,master3:9333"
+    ports:
+      - "9337:9333"
+      - "9338:9334"
+      - "19337:19333"
+      - "9096:9096"
+    volumes:
+      - ./data/master3:/data/master
+    depends_on:
+      - master1
+
+  volume1:
+    build: .
+    hostname: volume1
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - "/blob volume -ip=$(hostname) -port=8080 -grpc.port=18080 -masters=master1:9333,master2:9333,master3:9333 -dir=/data/volume -metricsPort=9091 -ratePerSecond=100000"
     ports:
       - "8080:8080"
       - "18080:18080"
       - "9091:9091"
     depends_on:
-      - master
+      - master1
     volumes:
-      - ./data/volume:/data/volume
+      - ./data/volume1:/data/volume
+
+  volume2:
+    build: .
+    hostname: volume2
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - "/blob volume -ip=$(hostname) -port=8080 -grpc.port=18080 -masters=master1:9333,master2:9333,master3:9333 -dir=/data/volume -metricsPort=9097 -ratePerSecond=100000"
+    ports:
+      - "8081:8080"
+      - "18081:18080"
+      - "9097:9097"
+    depends_on:
+      - master1
+    volumes:
+      - ./data/volume2:/data/volume
+
+  volume3:
+    build: .
+    hostname: volume3
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - "/blob volume -ip=$(hostname) -port=8080 -grpc.port=18080 -masters=master1:9333,master2:9333,master3:9333 -dir=/data/volume -metricsPort=9098 -ratePerSecond=100000"
+    ports:
+      - "8082:8080"
+      - "18082:18080"
+      - "9098:9098"
+    depends_on:
+      - master1
+    volumes:
+      - ./data/volume3:/data/volume
 
   filer:
     build: .
-    command: ["filer", "-ip=0.0.0.0", "-port=8888", "-grpc.port=18888", "-masters=master:9333", "-storeDir=/data/filer", "-metricsPort=9092"]
+    hostname: filer
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - "/blob filer -ip=$(hostname) -port=8888 -grpc.port=18888 -masters=master1:9333,master2:9333,master3:9333 -storeDir=/data/filer -metricsPort=9092 -ratePerSecond=100000"
     ports:
       - "8888:8888"
       - "18888:18888"
       - "9092:9092"
     depends_on:
-      - master
+      - master1
     volumes:
       - ./data/filer:/data/filer
 
   s3:
     build: .
-    command: ["s3", "-ip=0.0.0.0", "-port=8333", "-filer=filer:8888", "-metricsPort=9093"]
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - "/blob s3 -ip=$(hostname -i) -port=8333 -filer=filer:8888 -metricsPort=9093"
     ports:
       - "8333:8333"
       - "9093:9093"

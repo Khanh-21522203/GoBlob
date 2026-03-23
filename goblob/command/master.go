@@ -27,6 +27,7 @@ type MasterCommand struct {
 	maintenanceFiler   string
 	pushgatewayURL     string
 	pushgatewayJob     string
+	ratePerSecond      float64
 }
 
 func init() {
@@ -57,6 +58,7 @@ func (c *MasterCommand) SetFlags(fs *flag.FlagSet) {
 	fs.StringVar(&c.maintenanceFiler, "maintenanceFiler", "127.0.0.1:8888", "filer HTTP address used by maintenance shell")
 	fs.StringVar(&c.pushgatewayURL, "pushgatewayURL", "", "pushgateway base URL")
 	fs.StringVar(&c.pushgatewayJob, "pushgatewayJob", "goblob-master", "pushgateway job name")
+	fs.Float64Var(&c.ratePerSecond, "ratePerSecond", 0, "per-IP HTTP rate limit (req/sec); 0 = default 200")
 }
 
 func (c *MasterCommand) Run(ctx context.Context, args []string) error {
@@ -74,6 +76,7 @@ func (c *MasterCommand) Run(ctx context.Context, args []string) error {
 	opt.Rack = c.rack
 	opt.MaintenanceScripts = c.maintenanceScripts
 	opt.MaintenanceSleep = c.maintenanceSleep
+	opt.RatePerSecond = c.ratePerSecond
 
 	rt, err := startMasterRuntime(opt)
 	if err != nil {

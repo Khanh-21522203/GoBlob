@@ -38,6 +38,8 @@ type VolumeServerOption struct {
 	PulseSeconds int
 	// CacheMaxEntries is the max number of needles to cache in memory (0 = disabled).
 	CacheMaxEntries int
+	// RatePerSecond is the per-IP HTTP rate limit (requests/sec). 0 = use default.
+	RatePerSecond float64
 }
 
 // DiskDirectoryConfig defines a single storage directory.

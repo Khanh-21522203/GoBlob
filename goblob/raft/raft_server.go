@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -138,6 +139,8 @@ func (rs *raftServerImpl) setup() error {
 }
 
 // buildBootstrapConfig constructs the initial cluster configuration.
+// Peers are HTTP addresses (host:httpPort); the Raft transport address is
+// derived as host:httpPort+1, matching the convention in master_server.go.
 func (rs *raftServerImpl) buildBootstrapConfig(localID raft.ServerID, localAddr raft.ServerAddress) raft.Configuration {
 	if rs.cfg.SingleMode || len(rs.cfg.Peers) == 0 {
 		// Single-node: only self as voter; becomes leader immediately.
@@ -148,15 +151,31 @@ func (rs *raftServerImpl) buildBootstrapConfig(localID raft.ServerID, localAddr 
 		}
 	}
 
-	// Multi-node: all peers are voters.
+	// Multi-node: peers are HTTP addresses.
+	// ID = HTTP address (same as NodeId format so LeaderAddress() is usable).
+	// Address = Raft transport address (httpPort+1).
 	servers := make([]raft.Server, 0, len(rs.cfg.Peers))
 	for _, peer := range rs.cfg.Peers {
 		servers = append(servers, raft.Server{
 			ID:      raft.ServerID(peer),
-			Address: raft.ServerAddress(peer),
+			Address: raft.ServerAddress(httpAddrToRaftAddr(peer)),
 		})
 	}
 	return raft.Configuration{Servers: servers}
+}
+
+// httpAddrToRaftAddr derives the Raft transport address from an HTTP address.
+// The Raft port is httpPort+1 — the same convention used in master_server.go.
+func httpAddrToRaftAddr(httpAddr string) string {
+	host, portStr, err := net.SplitHostPort(httpAddr)
+	if err != nil {
+		return httpAddr
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return httpAddr
+	}
+	return net.JoinHostPort(host, strconv.Itoa(port+1))
 }
 
 // observeLeader watches for leader transitions and invokes the callback.
@@ -179,10 +198,14 @@ func (rs *raftServerImpl) IsLeader() bool {
 	return rs.raft.State() == raft.Leader
 }
 
-// LeaderAddress returns the address of the current cluster leader.
+// LeaderAddress returns the HTTP address of the current cluster leader.
+// We store the node's HTTP address as the Raft ServerID (see master_server.go),
+// so the ServerID is what clients should use with ToGrpcAddress() to get the
+// gRPC endpoint. The Raft ServerAddress is the internal Raft-transport port and
+// is not useful to external callers.
 func (rs *raftServerImpl) LeaderAddress() string {
-	addr, _ := rs.raft.LeaderWithID()
-	return string(addr)
+	_, id := rs.raft.LeaderWithID()
+	return string(id)
 }
 
 // Apply submits a command to the Raft log and waits for consensus.

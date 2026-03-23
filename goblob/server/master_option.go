@@ -10,6 +10,9 @@ type MasterOption struct {
 	Port int
 	// GRPCPort is the gRPC port for the master server.
 	GRPCPort int
+	// RaftPort is the TCP port used by the Raft transport.
+	// Defaults to Port+1 when 0.
+	RaftPort int
 	// MetaDir is the directory for storing Raft and sequencer data.
 	MetaDir string
 	// Peers is the list of initial Raft peer addresses.
@@ -32,6 +35,8 @@ type MasterOption struct {
 	MaintenanceSleep time.Duration
 	// ReplicationAsMin indicates whether the replication setting is a minimum.
 	ReplicationAsMin bool
+	// RatePerSecond is the per-IP HTTP rate limit (requests/sec). 0 = use default.
+	RatePerSecond float64
 }
 
 // DefaultMasterOption returns sensible defaults for master server configuration.

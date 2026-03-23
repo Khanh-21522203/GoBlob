@@ -32,6 +32,8 @@ type FilerOption struct {
 	DataCenter string
 	// Rack is the rack this filer belongs to.
 	Rack string
+	// RatePerSecond is the per-IP HTTP rate limit (requests/sec). 0 = use default.
+	RatePerSecond float64
 }
 
 // DefaultFilerOption returns sensible defaults for filer server configuration.

@@ -67,10 +67,19 @@ func NewMasterServerWithGRPC(mux *http.ServeMux, grpcServer *grpc.Server, opt *M
 		StepSize: 10000,
 	}
 
-	// Create Raft config
+	// Raft uses a dedicated port (Port+1) to avoid conflicting with the gRPC listener.
+	raftPort := opt.RaftPort
+	if raftPort == 0 {
+		raftPort = opt.Port + 1
+	}
+	raftAddr := fmt.Sprintf("%s:%d", opt.Host, raftPort)
+
+	// Create Raft config.
+	// NodeId uses the HTTP address (host:port) so that ToGrpcAddress() on the
+	// leader address converts it to host:grpcPort for volume/filer clients.
 	raftConfig := &raft.RaftConfig{
-		NodeId:             fmt.Sprintf("%s:%d", opt.Host, opt.GRPCPort),
-		BindAddr:           fmt.Sprintf("%s:%d", opt.Host, opt.GRPCPort),
+		NodeId:             fmt.Sprintf("%s:%d", opt.Host, opt.Port),
+		BindAddr:           raftAddr,
 		MetaDir:            filepath.Join(opt.MetaDir, "raft"),
 		Peers:              opt.Peers,
 		SingleMode:         len(opt.Peers) == 0,

@@ -8,27 +8,27 @@ import (
 
 // Core types used across all GoBlob components.
 
-type VolumeId uint32    // identifies a logical volume; max ~4 billion
-type NeedleId uint64    // blob identity within a volume; globally monotonic
-type Cookie   uint32    // random 4-byte anti-brute-force value
-type Offset   uint32    // encoded byte offset = actualOffset / 8
-type Size     uint32    // on-disk byte size; 0 = tombstone (deleted)
-type DiskType string    // "hdd", "ssd", or custom tag; "" = default
+type VolumeId uint32 // identifies a logical volume; max ~4 billion
+type NeedleId uint64 // blob identity within a volume; globally monotonic
+type Cookie uint32   // random 4-byte anti-brute-force value
+type Offset uint32   // encoded byte offset = actualOffset / 8
+type Size uint32     // on-disk byte size; 0 = tombstone (deleted)
+type DiskType string // "hdd", "ssd", or custom tag; "" = default
 type NeedleVersion uint8
-type ServerAddress string  // typed "host:port" string
+type ServerAddress string // typed "host:port" string
 
 const (
 	NeedleAlignmentSize uint64 = 8
 	TombstoneFileSize   Size   = 0
-	NeedleIndexSize            = 16 // NeedleId(8)+Offset(4)+Size(4)
+	NeedleIndexSize            = 16                     // NeedleId(8)+Offset(4)+Size(4)
 	MaxVolumeSize       uint64 = 8 * 1024 * 1024 * 1024 // 8GB max volume size
 )
 
 const (
-	NeedleVersionV1 NeedleVersion = 1
-	NeedleVersionV2 NeedleVersion = 2
-	NeedleVersionV3 NeedleVersion = 3
-	CurrentNeedleVersion = NeedleVersionV3
+	NeedleVersionV1      NeedleVersion = 1
+	NeedleVersionV2      NeedleVersion = 2
+	NeedleVersionV3      NeedleVersion = 3
+	CurrentNeedleVersion               = NeedleVersionV3
 )
 
 const (
@@ -240,30 +240,39 @@ func (t TTL) String() string {
 // ServerAddress helpers
 
 func (sa ServerAddress) ToGrpcAddress() ServerAddress {
-	// If address is "host:httpPort", return "host:httpPort+10000"
-	// If address is "host:httpPort.grpcPort", return "host:grpcPort"
-	parts := strings.Split(string(sa), ".")
-	if len(parts) == 1 {
-		// Simple host:port format
-		host, portStr, err := splitHostPort(string(sa))
-		if err != nil {
+	// Format "host:httpPort.grpcPort" (explicit gRPC port): the last "."-segment
+	// is a pure decimal port number.  IPv4 addresses like "127.0.0.1:9333" also
+	// contain dots, but their last segment is "1:9333" (contains a colon), so
+	// checking for all-digits in the last segment unambiguously identifies the
+	// explicit-port format.
+	s := string(sa)
+	if idx := strings.LastIndex(s, "."); idx >= 0 {
+		suffix := s[idx+1:]
+		if _, err := strconv.ParseUint(suffix, 10, 32); err == nil {
+			// Already carries an explicit gRPC port — return as-is.
 			return sa
 		}
-		port, err := strconv.ParseUint(portStr, 10, 32)
-		if err != nil {
-			return sa
-		}
-		return ServerAddress(fmt.Sprintf("%s:%d", host, port+GRPCPortOffset))
 	}
-	// Has explicit gRPC port
-	return sa
+	// Simple "host:httpPort" — derive gRPC port by adding GRPCPortOffset.
+	host, portStr, err := splitHostPort(s)
+	if err != nil {
+		return sa
+	}
+	port, err := strconv.ParseUint(portStr, 10, 32)
+	if err != nil {
+		return sa
+	}
+	return ServerAddress(fmt.Sprintf("%s:%d", host, port+GRPCPortOffset))
 }
 
 func (sa ServerAddress) ToHttpAddress() ServerAddress {
-	parts := strings.Split(string(sa), ".")
-	if len(parts) > 1 {
-		// Strip gRPC port suffix
-		return ServerAddress(parts[0])
+	// Format "host:httpPort.grpcPort": strip the last ".grpcPort" suffix.
+	s := string(sa)
+	if idx := strings.LastIndex(s, "."); idx >= 0 {
+		suffix := s[idx+1:]
+		if _, err := strconv.ParseUint(suffix, 10, 32); err == nil {
+			return ServerAddress(s[:idx])
+		}
 	}
 	return sa
 }

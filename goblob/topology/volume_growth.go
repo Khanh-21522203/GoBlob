@@ -160,10 +160,15 @@ func (vg *VolumeGrowth) reserveCapacity(dataNode *DataNode, diskType types.DiskT
 
 	reservedDiskType := diskType
 	if reservedDiskType == types.DefaultDiskType {
-		reservedDiskType = pickReservationDiskType(dataNode)
-		if reservedDiskType == "" {
+		// pickReservationDiskType returns (diskType, true) when a disk with free
+		// slots is found. DefaultDiskType ("") is a valid disk type name, so we
+		// must use the bool to distinguish "found DefaultDiskType" from "no disk
+		// with free slots".
+		dt, ok := pickReservationDiskType(dataNode)
+		if !ok {
 			return nil
 		}
+		reservedDiskType = dt
 	}
 	if !dataNode.ReserveSlot(reservedDiskType) {
 		return nil
@@ -334,10 +339,12 @@ func (vg *VolumeGrowth) deallocateVolumeOnNode(ctx context.Context, node *DataNo
 	return nil
 }
 
-func pickReservationDiskType(dataNode *DataNode) types.DiskType {
+// pickReservationDiskType returns the disk type with free slots and true,
+// or ("", false) if no disk with free slots exists.
+func pickReservationDiskType(dataNode *DataNode) (types.DiskType, bool) {
 	freeSlots := dataNode.GetFreeVolumeSlots()
 	if len(freeSlots) == 0 {
-		return ""
+		return "", false
 	}
 
 	diskTypes := make([]types.DiskType, 0, len(freeSlots))
@@ -347,10 +354,10 @@ func pickReservationDiskType(dataNode *DataNode) types.DiskType {
 	sort.Slice(diskTypes, func(i, j int) bool { return string(diskTypes[i]) < string(diskTypes[j]) })
 	for _, dt := range diskTypes {
 		if freeSlots[dt] > 0 {
-			return dt
+			return dt, true
 		}
 	}
-	return ""
+	return "", false
 }
 
 func grpcAddressForDataNode(node *DataNode) string {

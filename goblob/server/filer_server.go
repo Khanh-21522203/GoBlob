@@ -263,6 +263,16 @@ func (fs *FilerServer) handleFileUpload(w http.ResponseWriter, r *http.Request) 
 		entry.Attr.FileSize = uint64(len(data))
 	}
 
+	// Ensure parent directories exist.
+	dir, _ := entry.FullPath.DirAndName()
+	if dir != "/" {
+		if err := fs.filer.MkdirAll(fs.ctx, dir); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+	}
+
 	// Create entry in store
 	err := fs.filer.CreateEntry(fs.ctx, entry)
 	if err != nil {
@@ -352,7 +362,7 @@ func (fs *FilerServer) handleFileDownload(w http.ResponseWriter, r *http.Request
 				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
-			chunkURL := "http://" + locs[0].Url + "/" + chunk.FileId
+			chunkURL := locs[0].Url + "/" + chunk.FileId
 			req, err := http.NewRequestWithContext(fs.ctx, http.MethodGet, chunkURL, nil)
 			if err != nil {
 				w.WriteHeader(http.StatusInternalServerError)

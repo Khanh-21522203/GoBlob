@@ -27,6 +27,7 @@ type FilerCommand struct {
 	rack                    string
 	pushgatewayURL          string
 	pushgatewayJob          string
+	ratePerSecond           float64
 }
 
 func init() {
@@ -58,6 +59,7 @@ func (c *FilerCommand) SetFlags(fs *flag.FlagSet) {
 	fs.StringVar(&c.rack, "rack", def.Rack, "rack")
 	fs.StringVar(&c.pushgatewayURL, "pushgatewayURL", "", "pushgateway base URL")
 	fs.StringVar(&c.pushgatewayJob, "pushgatewayJob", "goblob-filer", "pushgateway job name")
+	fs.Float64Var(&c.ratePerSecond, "ratePerSecond", 0, "per-IP HTTP rate limit (req/sec); 0 = default 200")
 }
 
 func (c *FilerCommand) Run(ctx context.Context, args []string) error {
@@ -81,6 +83,7 @@ func (c *FilerCommand) Run(ctx context.Context, args []string) error {
 	opt.BucketsFolder = c.bucketsFolder
 	opt.DataCenter = c.dataCenter
 	opt.Rack = c.rack
+	opt.RatePerSecond = c.ratePerSecond
 
 	if opt.DefaultStoreDir == "" {
 		opt.DefaultStoreDir = filepath.Join(".", "tmp", "filer")

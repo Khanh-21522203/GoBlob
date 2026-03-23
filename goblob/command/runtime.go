@@ -43,8 +43,9 @@ func startMasterRuntime(opt *server.MasterOption) (*masterRuntime, error) {
 
 	httpServer := &http.Server{
 		Handler: security.ApplyHardening(mux, security.HardeningOption{
-			MaxBodyBytes: 100 * 1024 * 1024,
-			Burst:        200,
+			MaxBodyBytes:  100 * 1024 * 1024,
+			Burst:         burstFor(opt.RatePerSecond, 200),
+			RatePerSecond: opt.RatePerSecond,
 		}),
 		ReadHeaderTimeout: 30 * time.Second,
 	}
@@ -72,7 +73,6 @@ func (rt *masterRuntime) shutdown(ctx context.Context) {
 type volumeRuntime struct {
 	server          *server.VolumeServer
 	adminHTTPServer *http.Server
-	publicHTTP      *http.Server
 	grpcServer      *grpc.Server
 }
 
@@ -99,8 +99,9 @@ func startVolumeRuntime(opt *server.VolumeServerOption) (*volumeRuntime, error) 
 
 	adminServer := &http.Server{
 		Handler: security.ApplyHardening(adminMux, security.HardeningOption{
-			MaxBodyBytes: opt.FileSizeLimitMB * 1024 * 1024,
-			Burst:        200,
+			MaxBodyBytes:  opt.FileSizeLimitMB * 1024 * 1024,
+			Burst:         burstFor(opt.RatePerSecond, 200),
+			RatePerSecond: opt.RatePerSecond,
 		}),
 		ReadHeaderTimeout: 30 * time.Second,
 	}
@@ -121,9 +122,6 @@ func (rt *volumeRuntime) shutdown(ctx context.Context) {
 	}
 	if rt.adminHTTPServer != nil {
 		_ = rt.adminHTTPServer.Shutdown(ctx)
-	}
-	if rt.publicHTTP != nil {
-		_ = rt.publicHTTP.Shutdown(ctx)
 	}
 	if rt.grpcServer != nil {
 		rt.grpcServer.GracefulStop()
@@ -178,8 +176,9 @@ func startFilerRuntime(opt *server.FilerOption) (*filerRuntime, error) {
 
 	httpServer := &http.Server{
 		Handler: security.ApplyHardening(defaultMux, security.HardeningOption{
-			MaxBodyBytes: int64(opt.MaxFileSizeMB) * 1024 * 1024,
-			Burst:        150,
+			MaxBodyBytes:  int64(opt.MaxFileSizeMB) * 1024 * 1024,
+			Burst:         burstFor(opt.RatePerSecond, 150),
+			RatePerSecond: opt.RatePerSecond,
 		}),
 		ReadHeaderTimeout: 30 * time.Second,
 	}
@@ -245,4 +244,16 @@ func (rt *httpRuntime) shutdown(ctx context.Context) {
 
 func shutdownCtx() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), 10*time.Second)
+}
+
+// burstFor returns a burst size proportional to rps (rps/10, min defaultBurst).
+func burstFor(rps float64, defaultBurst int) int {
+	if rps <= 0 {
+		return defaultBurst
+	}
+	b := int(rps / 10)
+	if b < defaultBurst {
+		return defaultBurst
+	}
+	return b
 }

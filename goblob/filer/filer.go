@@ -2,7 +2,10 @@ package filer
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -43,6 +46,51 @@ func NewFiler(store FilerStore, masterAddrs []string, logger *slog.Logger) *File
 // SetStore sets the filer store.
 func (f *Filer) SetStore(store FilerStore) {
 	f.Store = store
+}
+
+// MkdirAll ensures all ancestor directories of dirPath exist, creating any that are missing.
+// dirPath must be an absolute path (e.g. "/bench" or "/a/b/c").
+func (f *Filer) MkdirAll(ctx context.Context, dirPath FullPath) error {
+	if f.Store == nil {
+		return ErrStoreNotConfigured
+	}
+	if dirPath == "/" || dirPath == "" {
+		return nil
+	}
+	parts := strings.Split(strings.Trim(string(dirPath), "/"), "/")
+	cur := FullPath("/")
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		var child FullPath
+		if cur == "/" {
+			child = FullPath("/" + part)
+		} else {
+			child = FullPath(string(cur) + "/" + part)
+		}
+		_, err := f.Store.FindEntry(ctx, child)
+		if err == nil {
+			cur = child
+			continue
+		}
+		if !errors.Is(err, ErrNotFound) {
+			return err
+		}
+		// Create the missing directory.
+		dirEntry := &Entry{
+			FullPath: child,
+			Attr: Attr{
+				Mode:  os.ModeDir | 0755,
+				Mtime: time.Now(),
+			},
+		}
+		if err := f.Store.InsertEntry(ctx, dirEntry); err != nil {
+			return err
+		}
+		cur = child
+	}
+	return nil
 }
 
 // CreateEntry creates a new file or directory entry.

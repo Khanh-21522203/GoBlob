@@ -164,6 +164,12 @@ func (ms *MasterServer) handleAssign(w http.ResponseWriter, r *http.Request) {
 
 // handleLookup handles GET /dir/lookup requests.
 func (ms *MasterServer) handleLookup(w http.ResponseWriter, r *http.Request) {
+	// Followers don't have topology — proxy to the leader.
+	if ms.Raft != nil && !ms.Raft.IsLeader() {
+		ms.proxyToLeader(w, r)
+		return
+	}
+
 	// Parse volume ID
 	vidStr := r.URL.Query().Get("volumeId")
 	if vidStr == "" {
