@@ -28,23 +28,27 @@ type RaftServer interface {
 	RemovePeer(addr string) error
 	Stats() map[string]string
 	Shutdown() error
+	// Subscribe registers a named observer and returns its receive channel.
+	Subscribe(name string, bufSize int) <-chan StateEvent
+	// Unsubscribe removes a named observer and closes its channel.
+	Unsubscribe(name string)
 }
 
 // raftServerImpl is the concrete implementation of RaftServer.
 type raftServerImpl struct {
-	cfg            *RaftConfig
-	raft           *raft.Raft
-	fsm            *MasterFSM
-	transport      raft.Transport
-	logStore       *raftboltdb.BoltStore
-	stableStore    *raftboltdb.BoltStore
-	onLeaderChange func(isLeader bool)
-	leaderChClose  chan struct{}
-	closeOnce      sync.Once
+	EventBus
+	cfg           *RaftConfig
+	raft          *raft.Raft
+	fsm           *MasterFSM
+	transport     raft.Transport
+	logStore      *raftboltdb.BoltStore
+	stableStore   *raftboltdb.BoltStore
+	leaderChClose chan struct{}
+	closeOnce     sync.Once
 }
 
 // NewRaftServer creates and starts a new Raft server.
-func NewRaftServer(cfg *RaftConfig, fsm *MasterFSM, onLeaderChange func(bool)) (RaftServer, error) {
+func NewRaftServer(cfg *RaftConfig, fsm *MasterFSM) (RaftServer, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
@@ -54,10 +58,10 @@ func NewRaftServer(cfg *RaftConfig, fsm *MasterFSM, onLeaderChange func(bool)) (
 	}
 
 	rs := &raftServerImpl{
-		cfg:            cfg,
-		fsm:            fsm,
-		onLeaderChange: onLeaderChange,
-		leaderChClose:  make(chan struct{}),
+		EventBus:      newEventBus(),
+		cfg:           cfg,
+		fsm:           fsm,
+		leaderChClose: make(chan struct{}),
 	}
 
 	if err := rs.setup(); err != nil {
@@ -178,15 +182,12 @@ func httpAddrToRaftAddr(httpAddr string) string {
 	return net.JoinHostPort(host, strconv.Itoa(port+1))
 }
 
-// observeLeader watches for leader transitions and invokes the callback.
+// observeLeader watches for leader transitions and publishes EventLeaderChange.
 func (rs *raftServerImpl) observeLeader() {
 	for {
 		select {
 		case isLeader := <-rs.raft.LeaderCh():
-			if rs.onLeaderChange != nil {
-				// Run in a goroutine so we never block Raft's internal goroutine.
-				go rs.onLeaderChange(isLeader)
-			}
+			rs.publish(StateEvent{Kind: EventLeaderChange, IsLeader: isLeader})
 		case <-rs.leaderChClose:
 			return
 		}

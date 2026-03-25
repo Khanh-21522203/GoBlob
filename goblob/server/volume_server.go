@@ -34,7 +34,7 @@ import (
 // VolumeServer is the data plane server storing blobs and serving read/write requests.
 type VolumeServer struct {
 	option            *VolumeServerOption
-	store             *storage.Store
+	store             storage.VolumeStore
 	guard             *security.Guard
 	grpcServer        *grpc.Server
 	replicator        replication.Replicator
@@ -412,7 +412,7 @@ func (vs *VolumeServer) handleDelete(w http.ResponseWriter, r *http.Request) {
 func (vs *VolumeServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	volumeCount := 0
 	if vs.store != nil {
-		for _, dl := range vs.store.Locations {
+		for _, dl := range vs.store.GetLocations() {
 			volumeCount += dl.VolumeCount()
 			obs.VolumeServerDiskFreeBytes.WithLabelValues(dl.Directory()).Set(float64(dl.FreeSpace()))
 		}
@@ -509,7 +509,7 @@ func (vs *VolumeServer) BuildHeartbeat() *master_pb.Heartbeat {
 		})
 	}
 	if vs.store != nil {
-		for _, dl := range vs.store.Locations {
+		for _, dl := range vs.store.GetLocations() {
 			for _, vid := range dl.GetVolumes() {
 				v, ok := vs.store.GetVolume(vid)
 				if !ok {

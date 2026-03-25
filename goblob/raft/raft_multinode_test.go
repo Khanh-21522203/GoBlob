@@ -42,7 +42,7 @@ func newInmemNode(t *testing.T) *inmemNode {
 	cfg.Logger = nil // suppress hashicorp/raft log noise in tests
 
 	return &inmemNode{
-		fsm:         NewMasterFSM(nil, nil, nil),
+		fsm:         NewMasterFSM(),
 		transport:   transport,
 		addr:        addr,
 		logStore:    logStore,

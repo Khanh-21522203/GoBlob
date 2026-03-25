@@ -66,12 +66,8 @@ func TestRaftConfigValidation(t *testing.T) {
 
 func TestMasterFSM(t *testing.T) {
 	t.Run("apply max_file_id", func(t *testing.T) {
-		var gotFileId uint64
-		fsm := NewMasterFSM(
-			func(id uint64) { gotFileId = id },
-			nil,
-			nil,
-		)
+		fsm := NewMasterFSM()
+		ch := fsm.Subscribe("test", 10)
 
 		data, err := encodeLogEntry(MaxFileIdCommand{MaxFileId: 1000})
 		if err != nil {
@@ -84,13 +80,19 @@ func TestMasterFSM(t *testing.T) {
 		if fsm.GetMaxFileId() != 1000 {
 			t.Errorf("expected max_file_id=1000, got %d", fsm.GetMaxFileId())
 		}
-		if gotFileId != 1000 {
-			t.Errorf("expected callback with 1000, got %d", gotFileId)
+
+		select {
+		case evt := <-ch:
+			if evt.Kind != EventMaxFileId || evt.MaxFileId != 1000 {
+				t.Errorf("unexpected event: %+v", evt)
+			}
+		case <-time.After(time.Second):
+			t.Error("timeout waiting for EventMaxFileId")
 		}
 	})
 
 	t.Run("max_file_id only increases", func(t *testing.T) {
-		fsm := NewMasterFSM(nil, nil, nil)
+		fsm := NewMasterFSM()
 
 		data, _ := encodeLogEntry(MaxFileIdCommand{MaxFileId: 1000})
 		fsm.Apply(&raft.Log{Type: raft.LogCommand, Data: data})
@@ -104,8 +106,8 @@ func TestMasterFSM(t *testing.T) {
 	})
 
 	t.Run("apply max_volume_id", func(t *testing.T) {
-		var gotVolumeId uint32
-		fsm := NewMasterFSM(nil, func(id uint32) { gotVolumeId = id }, nil)
+		fsm := NewMasterFSM()
+		ch := fsm.Subscribe("test", 10)
 
 		data, _ := encodeLogEntry(MaxVolumeIdCommand{MaxVolumeId: 42})
 		fsm.Apply(&raft.Log{Type: raft.LogCommand, Data: data})
@@ -113,14 +115,20 @@ func TestMasterFSM(t *testing.T) {
 		if fsm.GetMaxVolumeId() != 42 {
 			t.Errorf("expected max_volume_id=42, got %d", fsm.GetMaxVolumeId())
 		}
-		if gotVolumeId != 42 {
-			t.Errorf("expected callback with 42, got %d", gotVolumeId)
+
+		select {
+		case evt := <-ch:
+			if evt.Kind != EventMaxVolumeId || evt.MaxVolumeId != 42 {
+				t.Errorf("unexpected event: %+v", evt)
+			}
+		case <-time.After(time.Second):
+			t.Error("timeout waiting for EventMaxVolumeId")
 		}
 	})
 
 	t.Run("apply topology_id", func(t *testing.T) {
-		var gotTopoId string
-		fsm := NewMasterFSM(nil, nil, func(id string) { gotTopoId = id })
+		fsm := NewMasterFSM()
+		ch := fsm.Subscribe("test", 10)
 
 		data, _ := encodeLogEntry(TopologyIdCommand{TopologyId: "cluster-uuid-123"})
 		fsm.Apply(&raft.Log{Type: raft.LogCommand, Data: data})
@@ -128,13 +136,19 @@ func TestMasterFSM(t *testing.T) {
 		if fsm.GetTopologyId() != "cluster-uuid-123" {
 			t.Errorf("expected topology_id=cluster-uuid-123, got %s", fsm.GetTopologyId())
 		}
-		if gotTopoId != "cluster-uuid-123" {
-			t.Errorf("expected callback with cluster-uuid-123, got %s", gotTopoId)
+
+		select {
+		case evt := <-ch:
+			if evt.Kind != EventTopologyId || evt.TopologyId != "cluster-uuid-123" {
+				t.Errorf("unexpected event: %+v", evt)
+			}
+		case <-time.After(time.Second):
+			t.Error("timeout waiting for EventTopologyId")
 		}
 	})
 
 	t.Run("unknown command returns error", func(t *testing.T) {
-		fsm := NewMasterFSM(nil, nil, nil)
+		fsm := NewMasterFSM()
 		data, _ := encodeLogEntry(unknownCmd{})
 		result := fsm.Apply(&raft.Log{Type: raft.LogCommand, Data: data})
 		if result == nil {
@@ -145,7 +159,7 @@ func TestMasterFSM(t *testing.T) {
 
 func TestMasterFSMSnapshot(t *testing.T) {
 	t.Run("snapshot and restore", func(t *testing.T) {
-		fsm := NewMasterFSM(nil, nil, nil)
+		fsm := NewMasterFSM()
 
 		data, _ := encodeLogEntry(MaxFileIdCommand{MaxFileId: 5000})
 		fsm.Apply(&raft.Log{Type: raft.LogCommand, Data: data})
@@ -159,15 +173,9 @@ func TestMasterFSMSnapshot(t *testing.T) {
 			t.Fatalf("failed to create snapshot: %v", err)
 		}
 
-		// Restore to a new FSM.
-		var restoredFileId uint64
-		var restoredVolumeId uint32
-		var restoredTopoId string
-		newFSM := NewMasterFSM(
-			func(id uint64) { restoredFileId = id },
-			func(id uint32) { restoredVolumeId = id },
-			func(id string) { restoredTopoId = id },
-		)
+		// Restore to a new FSM and observe via EventRestored.
+		newFSM := NewMasterFSM()
+		ch := newFSM.Subscribe("test", 10)
 		rc := newInMemReadCloser(snap.(*masterFSMSnapshot))
 		if err := newFSM.Restore(rc); err != nil {
 			t.Fatalf("failed to restore: %v", err)
@@ -182,14 +190,23 @@ func TestMasterFSMSnapshot(t *testing.T) {
 		if newFSM.GetTopologyId() != "topo-abc" {
 			t.Errorf("expected restored topology_id=topo-abc, got %s", newFSM.GetTopologyId())
 		}
-		if restoredFileId != 5000 {
-			t.Errorf("expected callback fileId=5000, got %d", restoredFileId)
-		}
-		if restoredVolumeId != 7 {
-			t.Errorf("expected callback volumeId=7, got %d", restoredVolumeId)
-		}
-		if restoredTopoId != "topo-abc" {
-			t.Errorf("expected callback topoId=topo-abc, got %s", restoredTopoId)
+
+		select {
+		case evt := <-ch:
+			if evt.Kind != EventRestored {
+				t.Errorf("expected EventRestored, got %v", evt.Kind)
+			}
+			if evt.MaxFileId != 5000 {
+				t.Errorf("EventRestored: expected MaxFileId=5000, got %d", evt.MaxFileId)
+			}
+			if evt.MaxVolumeId != 7 {
+				t.Errorf("EventRestored: expected MaxVolumeId=7, got %d", evt.MaxVolumeId)
+			}
+			if evt.TopologyId != "topo-abc" {
+				t.Errorf("EventRestored: expected TopologyId=topo-abc, got %s", evt.TopologyId)
+			}
+		case <-time.After(time.Second):
+			t.Error("timeout waiting for EventRestored")
 		}
 	})
 }
@@ -215,20 +232,17 @@ func TestSingleModeRaftServer(t *testing.T) {
 			CommitTimeout:      50 * time.Millisecond,
 		}
 
-		fsm := NewMasterFSM(nil, nil, nil)
-		leaderCh := make(chan bool, 10)
-
-		rs, err := NewRaftServer(cfg, fsm, func(isLeader bool) {
-			leaderCh <- isLeader
-		})
+		fsm := NewMasterFSM()
+		rs, err := NewRaftServer(cfg, fsm)
 		if err != nil {
 			t.Fatalf("failed to create raft server: %v", err)
 		}
 		defer rs.Shutdown()
 
+		leaderCh := rs.Subscribe("test", 10)
 		select {
-		case isLeader := <-leaderCh:
-			if !isLeader {
+		case evt := <-leaderCh:
+			if !evt.IsLeader {
 				t.Error("expected to become leader")
 			}
 		case <-time.After(3 * time.Second):
@@ -244,10 +258,6 @@ func TestSingleModeRaftServer(t *testing.T) {
 		tmpDir := t.TempDir()
 		bindAddr := getFreeAddr(t)
 
-		var gotFileId uint64
-		var gotVolumeId uint32
-		var gotTopoId string
-
 		cfg := &RaftConfig{
 			MetaDir:            filepath.Join(tmpDir, "raft"),
 			BindAddr:           bindAddr,
@@ -260,20 +270,15 @@ func TestSingleModeRaftServer(t *testing.T) {
 			CommitTimeout:      50 * time.Millisecond,
 		}
 
-		fsm := NewMasterFSM(
-			func(id uint64) { gotFileId = id },
-			func(id uint32) { gotVolumeId = id },
-			func(id string) { gotTopoId = id },
-		)
-		leaderCh := make(chan bool, 10)
-
-		rs, err := NewRaftServer(cfg, fsm, func(isLeader bool) {
-			leaderCh <- isLeader
-		})
+		fsm := NewMasterFSM()
+		rs, err := NewRaftServer(cfg, fsm)
 		if err != nil {
 			t.Fatalf("failed to create raft server: %v", err)
 		}
 		defer rs.Shutdown()
+
+		leaderCh := rs.Subscribe("leader", 10)
+		fsmCh := fsm.Subscribe("test", 32)
 
 		select {
 		case <-leaderCh:
@@ -291,25 +296,36 @@ func TestSingleModeRaftServer(t *testing.T) {
 			t.Errorf("failed to apply TopologyIdCommand: %v", err)
 		}
 
-		time.Sleep(100 * time.Millisecond)
+		// Drain events and collect into a map by kind.
+		received := make(map[EventKind]StateEvent)
+		deadline := time.After(2 * time.Second)
+		for len(received) < 3 {
+			select {
+			case evt := <-fsmCh:
+				received[evt.Kind] = evt
+			case <-deadline:
+				t.Fatalf("timeout: only got %d/3 events", len(received))
+			}
+		}
+
+		if got := received[EventMaxFileId].MaxFileId; got != 9999 {
+			t.Errorf("expected MaxFileId=9999, got %d", got)
+		}
+		if got := received[EventMaxVolumeId].MaxVolumeId; got != 77 {
+			t.Errorf("expected MaxVolumeId=77, got %d", got)
+		}
+		if got := received[EventTopologyId].TopologyId; got != "cluster-xyz" {
+			t.Errorf("expected TopologyId=cluster-xyz, got %s", got)
+		}
 
 		if fsm.GetMaxFileId() != 9999 {
-			t.Errorf("expected max_file_id=9999, got %d", fsm.GetMaxFileId())
-		}
-		if gotFileId != 9999 {
-			t.Errorf("expected callback fileId=9999, got %d", gotFileId)
+			t.Errorf("FSM: expected max_file_id=9999, got %d", fsm.GetMaxFileId())
 		}
 		if fsm.GetMaxVolumeId() != 77 {
-			t.Errorf("expected max_volume_id=77, got %d", fsm.GetMaxVolumeId())
-		}
-		if gotVolumeId != 77 {
-			t.Errorf("expected callback volumeId=77, got %d", gotVolumeId)
+			t.Errorf("FSM: expected max_volume_id=77, got %d", fsm.GetMaxVolumeId())
 		}
 		if fsm.GetTopologyId() != "cluster-xyz" {
-			t.Errorf("expected topology_id=cluster-xyz, got %s", fsm.GetTopologyId())
-		}
-		if gotTopoId != "cluster-xyz" {
-			t.Errorf("expected callback topoId=cluster-xyz, got %s", gotTopoId)
+			t.Errorf("FSM: expected topology_id=cluster-xyz, got %s", fsm.GetTopologyId())
 		}
 	})
 
@@ -329,15 +345,14 @@ func TestSingleModeRaftServer(t *testing.T) {
 			CommitTimeout:      50 * time.Millisecond,
 		}
 
-		fsm := NewMasterFSM(nil, nil, nil)
-		leaderCh := make(chan bool, 10)
-
-		rs, err := NewRaftServer(cfg, fsm, func(isLeader bool) { leaderCh <- isLeader })
+		fsm := NewMasterFSM()
+		rs, err := NewRaftServer(cfg, fsm)
 		if err != nil {
 			t.Fatalf("failed to create raft server: %v", err)
 		}
 		defer rs.Shutdown()
 
+		leaderCh := rs.Subscribe("test", 10)
 		select {
 		case <-leaderCh:
 		case <-time.After(3 * time.Second):
@@ -411,14 +426,18 @@ type mockRaftServer struct {
 	leaderAddr string
 }
 
-func (m *mockRaftServer) IsLeader() bool                                    { return m.isLeader }
-func (m *mockRaftServer) LeaderAddress() string                             { return m.leaderAddr }
-func (m *mockRaftServer) Apply(_ RaftCommand, _ time.Duration) error        { return nil }
-func (m *mockRaftServer) Barrier(_ time.Duration) error                     { return nil }
-func (m *mockRaftServer) AddPeer(_ string) error                            { return nil }
-func (m *mockRaftServer) RemovePeer(_ string) error                         { return nil }
-func (m *mockRaftServer) Stats() map[string]string                          { return nil }
-func (m *mockRaftServer) Shutdown() error                                   { return nil }
+func (m *mockRaftServer) IsLeader() bool                             { return m.isLeader }
+func (m *mockRaftServer) LeaderAddress() string                      { return m.leaderAddr }
+func (m *mockRaftServer) Apply(_ RaftCommand, _ time.Duration) error { return nil }
+func (m *mockRaftServer) Barrier(_ time.Duration) error              { return nil }
+func (m *mockRaftServer) AddPeer(_ string) error                     { return nil }
+func (m *mockRaftServer) RemovePeer(_ string) error                  { return nil }
+func (m *mockRaftServer) Stats() map[string]string                   { return nil }
+func (m *mockRaftServer) Shutdown() error                            { return nil }
+func (m *mockRaftServer) Subscribe(_ string, bufSize int) <-chan StateEvent {
+	return make(chan StateEvent, bufSize)
+}
+func (m *mockRaftServer) Unsubscribe(_ string) {}
 
 // captureResponseWriter records the HTTP status code written.
 type captureResponseWriter struct {

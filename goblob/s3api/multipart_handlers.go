@@ -22,7 +22,7 @@ func (s *S3ApiServer) handleInitiateMultipart(w http.ResponseWriter, r *http.Req
 		writeS3Error(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
 		return
 	}
-	exists, err := s.filerClient.BucketExists(r.Context(), bucket)
+	exists, err := s.store.BucketExists(r.Context(), bucket)
 	if err != nil {
 		writeS3Error(w, r, http.StatusInternalServerError, "InternalError", err.Error())
 		return
@@ -33,7 +33,7 @@ func (s *S3ApiServer) handleInitiateMultipart(w http.ResponseWriter, r *http.Req
 	}
 
 	uploadID := newUploadID()
-	if err := s.filerClient.CreateMultipartUpload(r.Context(), bucket, key, uploadID, time.Now().UTC()); err != nil {
+	if err := s.store.CreateMultipartUpload(r.Context(), bucket, key, uploadID, time.Now().UTC()); err != nil {
 		if errors.Is(err, ErrBucketNotFound) {
 			writeS3Error(w, r, http.StatusNotFound, "NoSuchBucket", "bucket not found")
 			return
@@ -62,7 +62,7 @@ func (s *S3ApiServer) handleUploadPart(w http.ResponseWriter, r *http.Request, b
 		writeS3Error(w, r, http.StatusBadRequest, "InvalidArgument", "invalid part number")
 		return
 	}
-	if _, err := s.filerClient.LoadMultipartUpload(r.Context(), bucket, key, uploadID); err != nil {
+	if _, err := s.store.LoadMultipartUpload(r.Context(), bucket, key, uploadID); err != nil {
 		if errors.Is(err, ErrNotFound) {
 			writeS3Error(w, r, http.StatusNotFound, "NoSuchUpload", "multipart upload not found")
 			return
@@ -82,7 +82,7 @@ func (s *S3ApiServer) handleUploadPart(w http.ResponseWriter, r *http.Request, b
 		return
 	}
 
-	eTag, err := s.filerClient.PutMultipartPart(r.Context(), bucket, uploadID, partNumber, data)
+	eTag, err := s.store.PutMultipartPart(r.Context(), bucket, uploadID, partNumber, data)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrBucketNotFound):
@@ -103,7 +103,7 @@ func (s *S3ApiServer) handleCompleteMultipart(w http.ResponseWriter, r *http.Req
 		return
 	}
 	uploadID := r.URL.Query().Get("uploadId")
-	if _, err := s.filerClient.LoadMultipartUpload(r.Context(), bucket, key, uploadID); err != nil {
+	if _, err := s.store.LoadMultipartUpload(r.Context(), bucket, key, uploadID); err != nil {
 		if errors.Is(err, ErrNotFound) {
 			writeS3Error(w, r, http.StatusNotFound, "NoSuchUpload", "multipart upload not found")
 			return
@@ -142,7 +142,7 @@ func (s *S3ApiServer) handleCompleteMultipart(w http.ResponseWriter, r *http.Req
 
 	combined := make([]byte, 0)
 	for i, part := range req.Parts {
-		obj, computedETag, err := s.filerClient.GetMultipartPart(r.Context(), bucket, uploadID, part.PartNumber)
+		obj, computedETag, err := s.store.GetMultipartPart(r.Context(), bucket, uploadID, part.PartNumber)
 		if err != nil {
 			if errors.Is(err, ErrNotFound) {
 				writeS3Error(w, r, http.StatusBadRequest, "InvalidPart", "missing part")
@@ -162,7 +162,7 @@ func (s *S3ApiServer) handleCompleteMultipart(w http.ResponseWriter, r *http.Req
 		combined = append(combined, obj.Content...)
 	}
 
-	eTag, err := s.filerClient.PutObject(r.Context(), bucket, key, combined, "application/octet-stream", nil)
+	eTag, err := s.store.PutObject(r.Context(), bucket, key, combined, "application/octet-stream", nil)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrBucketNotFound):
@@ -173,14 +173,14 @@ func (s *S3ApiServer) handleCompleteMultipart(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	_ = s.filerClient.UpdateObjectExtended(r.Context(), bucket, key, func(ext map[string][]byte) (map[string][]byte, error) {
+	_ = s.store.UpdateObjectExtended(r.Context(), bucket, key, func(ext map[string][]byte) (map[string][]byte, error) {
 		if ext == nil {
 			ext = make(map[string][]byte)
 		}
 		ext["s3:etag"] = []byte(eTag)
 		return ext, nil
 	})
-	_ = s.filerClient.DeleteMultipartUpload(r.Context(), bucket, uploadID)
+	_ = s.store.DeleteMultipartUpload(r.Context(), bucket, uploadID)
 
 	writeXML(w, http.StatusOK, completeMultipartUploadResult{
 		Xmlns:    s3XMLNS,
@@ -197,7 +197,7 @@ func (s *S3ApiServer) handleAbortMultipart(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	uploadID := r.URL.Query().Get("uploadId")
-	if _, err := s.filerClient.LoadMultipartUpload(r.Context(), bucket, key, uploadID); err != nil {
+	if _, err := s.store.LoadMultipartUpload(r.Context(), bucket, key, uploadID); err != nil {
 		if errors.Is(err, ErrNotFound) {
 			writeS3Error(w, r, http.StatusNotFound, "NoSuchUpload", "multipart upload not found")
 			return
@@ -205,7 +205,7 @@ func (s *S3ApiServer) handleAbortMultipart(w http.ResponseWriter, r *http.Reques
 		writeS3Error(w, r, http.StatusInternalServerError, "InternalError", err.Error())
 		return
 	}
-	if err := s.filerClient.DeleteMultipartUpload(r.Context(), bucket, uploadID); err != nil {
+	if err := s.store.DeleteMultipartUpload(r.Context(), bucket, uploadID); err != nil {
 		writeS3Error(w, r, http.StatusInternalServerError, "InternalError", err.Error())
 		return
 	}

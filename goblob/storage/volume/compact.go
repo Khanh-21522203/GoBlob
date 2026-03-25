@@ -87,8 +87,7 @@ func (v *Volume) Compact(compactThreshold float64) (*CompactionResult, error) {
 	v.dataFileAccessLock.RUnlock()
 
 	// Iterate the needle map
-	nm := v.nm.(*MemDb)
-	nm.iterateIndex(func(id types.NeedleId, encOffset types.Offset, size types.Size) {
+	_ = v.nm.Iterate(func(id types.NeedleId, encOffset types.Offset, size types.Size) {
 		if compactErr != nil {
 			return
 		}

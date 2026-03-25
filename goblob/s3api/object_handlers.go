@@ -65,7 +65,7 @@ func (s *S3ApiServer) handlePutObject(w http.ResponseWriter, r *http.Request, bu
 	}
 
 	mimeType := r.Header.Get("Content-Type")
-	eTag, err := s.filerClient.PutObject(r.Context(), bucket, key, data, mimeType, extended)
+	eTag, err := s.store.PutObject(r.Context(), bucket, key, data, mimeType, extended)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrBucketNotFound):
@@ -76,7 +76,7 @@ func (s *S3ApiServer) handlePutObject(w http.ResponseWriter, r *http.Request, bu
 		return
 	}
 
-	if err := s.filerClient.UpdateObjectExtended(r.Context(), bucket, key, func(ext map[string][]byte) (map[string][]byte, error) {
+	if err := s.store.UpdateObjectExtended(r.Context(), bucket, key, func(ext map[string][]byte) (map[string][]byte, error) {
 		if ext == nil {
 			ext = make(map[string][]byte)
 		}
@@ -101,7 +101,7 @@ func (s *S3ApiServer) handlePutObject(w http.ResponseWriter, r *http.Request, bu
 }
 
 func (s *S3ApiServer) handleGetObject(w http.ResponseWriter, r *http.Request, bucket, key string, withBody bool) {
-	obj, err := s.filerClient.GetObject(r.Context(), bucket, key)
+	obj, err := s.store.GetObject(r.Context(), bucket, key)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrObjectNotFound):
@@ -136,7 +136,7 @@ func (s *S3ApiServer) handleGetObject(w http.ResponseWriter, r *http.Request, bu
 }
 
 func (s *S3ApiServer) handleDeleteObject(w http.ResponseWriter, r *http.Request, bucket, key string) {
-	exists, err := s.filerClient.BucketExists(r.Context(), bucket)
+	exists, err := s.store.BucketExists(r.Context(), bucket)
 	if err != nil {
 		writeS3Error(w, r, http.StatusInternalServerError, "InternalError", err.Error())
 		return
@@ -145,8 +145,8 @@ func (s *S3ApiServer) handleDeleteObject(w http.ResponseWriter, r *http.Request,
 		writeS3Error(w, r, http.StatusNotFound, "NoSuchBucket", "bucket not found")
 		return
 	}
-	obj, _ := s.filerClient.GetObject(r.Context(), bucket, key)
-	if err := s.filerClient.DeleteObject(r.Context(), bucket, key); err != nil {
+	obj, _ := s.store.GetObject(r.Context(), bucket, key)
+	if err := s.store.DeleteObject(r.Context(), bucket, key); err != nil {
 		writeS3Error(w, r, http.StatusInternalServerError, "InternalError", err.Error())
 		return
 	}
@@ -190,7 +190,7 @@ func (s *S3ApiServer) handleObjectTagging(w http.ResponseWriter, r *http.Request
 			writeS3Error(w, r, http.StatusInternalServerError, "InternalError", err.Error())
 			return
 		}
-		err = s.filerClient.UpdateObjectExtended(r.Context(), bucket, key, func(ext map[string][]byte) (map[string][]byte, error) {
+		err = s.store.UpdateObjectExtended(r.Context(), bucket, key, func(ext map[string][]byte) (map[string][]byte, error) {
 			if ext == nil {
 				ext = make(map[string][]byte)
 			}
@@ -207,7 +207,7 @@ func (s *S3ApiServer) handleObjectTagging(w http.ResponseWriter, r *http.Request
 		}
 		w.WriteHeader(http.StatusOK)
 	case http.MethodGet:
-		obj, err := s.filerClient.GetObject(r.Context(), bucket, key)
+		obj, err := s.store.GetObject(r.Context(), bucket, key)
 		if err != nil {
 			if errors.Is(err, ErrObjectNotFound) {
 				writeS3Error(w, r, http.StatusNotFound, "NoSuchKey", "object not found")
@@ -222,7 +222,7 @@ func (s *S3ApiServer) handleObjectTagging(w http.ResponseWriter, r *http.Request
 		}
 		writeXML(w, http.StatusOK, result)
 	case http.MethodDelete:
-		err := s.filerClient.UpdateObjectExtended(r.Context(), bucket, key, func(ext map[string][]byte) (map[string][]byte, error) {
+		err := s.store.UpdateObjectExtended(r.Context(), bucket, key, func(ext map[string][]byte) (map[string][]byte, error) {
 			delete(ext, "s3:tags")
 			return ext, nil
 		})

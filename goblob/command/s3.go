@@ -72,8 +72,8 @@ func (c *S3Command) Run(ctx context.Context, args []string) error {
 	}
 	if err := reload(); err != nil {
 		shutdownCtx, cancel := shutdownCtx()
-		metricsRT.shutdown(shutdownCtx)
-		rt.shutdown(shutdownCtx)
+		metricsRT.Shutdown(shutdownCtx)
+		rt.Shutdown(shutdownCtx)
 		cancel()
 		return err
 	}
@@ -83,7 +83,7 @@ func (c *S3Command) Run(ctx context.Context, args []string) error {
 	<-ctx.Done()
 	shutdownCtx, cancel := shutdownCtx()
 	defer cancel()
-	metricsRT.shutdown(shutdownCtx)
-	rt.shutdown(shutdownCtx)
+	metricsRT.Shutdown(shutdownCtx)
+	rt.Shutdown(shutdownCtx)
 	return nil
 }

@@ -149,8 +149,26 @@ func (s *Store) ReloadExistingVolumes(collection string, version types.NeedleVer
 	return nil
 }
 
+// GetLocations returns all configured disk locations.
+func (s *Store) GetLocations() []*volume.DiskLocation {
+	return s.Locations
+}
+
 // SetDataCenter sets the data center label.
 func (s *Store) SetDataCenter(dc string) { s.dataCenter = dc }
 
 // SetRack sets the rack label.
 func (s *Store) SetRack(rack string) { s.rack = rack }
+
+// VolumeStore is the interface VolumeServer uses for all storage operations.
+// *Store satisfies this interface; tests can substitute a fake.
+type VolumeStore interface {
+	WriteVolumeNeedle(vid types.VolumeId, n *needle.Needle) (types.Offset, uint32, error)
+	ReadVolumeNeedle(vid types.VolumeId, fid types.FileId) (*needle.Needle, error)
+	DeleteVolumeNeedle(vid types.VolumeId, nid types.NeedleId) error
+	AllocateVolume(id types.VolumeId, collection string, ver types.NeedleVersion) error
+	GetVolume(vid types.VolumeId) (*volume.Volume, bool)
+	GetLocations() []*volume.DiskLocation
+	ReloadExistingVolumes(collection string, version types.NeedleVersion) error
+	Close()
+}

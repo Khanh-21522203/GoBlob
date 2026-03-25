@@ -273,7 +273,7 @@ func copyProgressPercent(processed, total uint64) float32 {
 }
 
 func (s *VolumeGRPCServer) deleteVolume(vid types.VolumeId) error {
-	for _, dl := range s.vs.store.Locations {
+	for _, dl := range s.vs.store.GetLocations() {
 		if _, ok := dl.GetVolume(vid); ok {
 			return dl.DeleteVolume(vid)
 		}

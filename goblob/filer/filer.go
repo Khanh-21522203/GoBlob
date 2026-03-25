@@ -21,9 +21,15 @@ type Filer struct {
 	LocalMetaLogBuffer *LogBufferProxy
 	Dlm                *DistributedLockManager
 	FilerConf          *FilerConf
-	ctx                context.Context
-	logger             *slog.Logger
-	masterIdx          atomic.Uint64 // round-robin index for master selection
+	// Uploader handles chunked file uploads to volume storage.
+	// Injected at construction so callers can substitute a test double.
+	Uploader Uploader
+	// Resolver maps volume IDs to HTTP URLs for data retrieval.
+	// Injected at construction so callers can substitute a test double.
+	Resolver  Resolver
+	ctx       context.Context
+	logger    *slog.Logger
+	masterIdx atomic.Uint64 // round-robin index for master selection
 }
 
 // LogBufferProxy is a placeholder for the log_buffer.LogBuffer.

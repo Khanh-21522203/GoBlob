@@ -85,7 +85,7 @@ func (c *ServerCommand) Run(ctx context.Context, args []string) error {
 	metricsRT := startMetricsRuntime(c.host, c.metricsPort, c.pushgatewayURL, c.pushgatewayJob)
 	defer func() {
 		shutdownCtx, cancel := shutdownCtx()
-		metricsRT.shutdown(shutdownCtx)
+		metricsRT.Shutdown(shutdownCtx)
 		cancel()
 	}()
 
@@ -113,7 +113,7 @@ func (c *ServerCommand) Run(ctx context.Context, args []string) error {
 	volumeRT, err := startVolumeRuntime(volumeOpt)
 	if err != nil {
 		shutdownCtx, cancel := shutdownCtx()
-		masterRT.shutdown(shutdownCtx)
+		masterRT.Shutdown(shutdownCtx)
 		cancel()
 		return fmt.Errorf("start volume: %w", err)
 	}
@@ -129,8 +129,8 @@ func (c *ServerCommand) Run(ctx context.Context, args []string) error {
 	storeConfig, err := parseKeyValuePairs(c.filerStoreConfig)
 	if err != nil {
 		shutdownCtx, cancel := shutdownCtx()
-		volumeRT.shutdown(shutdownCtx)
-		masterRT.shutdown(shutdownCtx)
+		volumeRT.Shutdown(shutdownCtx)
+		masterRT.Shutdown(shutdownCtx)
 		cancel()
 		return fmt.Errorf("parse filer.store.config: %w", err)
 	}
@@ -140,8 +140,8 @@ func (c *ServerCommand) Run(ctx context.Context, args []string) error {
 	filerRT, err := startFilerRuntime(filerOpt)
 	if err != nil {
 		shutdownCtx, cancel := shutdownCtx()
-		volumeRT.shutdown(shutdownCtx)
-		masterRT.shutdown(shutdownCtx)
+		volumeRT.Shutdown(shutdownCtx)
+		masterRT.Shutdown(shutdownCtx)
 		cancel()
 		return fmt.Errorf("start filer: %w", err)
 	}
@@ -157,18 +157,18 @@ func (c *ServerCommand) Run(ctx context.Context, args []string) error {
 		s3, err := s3api.NewS3ApiServer(mux, s3Opt)
 		if err != nil {
 			shutdownCtx, cancel := shutdownCtx()
-			filerRT.shutdown(shutdownCtx)
-			volumeRT.shutdown(shutdownCtx)
-			masterRT.shutdown(shutdownCtx)
+			filerRT.Shutdown(shutdownCtx)
+			volumeRT.Shutdown(shutdownCtx)
+			masterRT.Shutdown(shutdownCtx)
 			cancel()
 			return fmt.Errorf("start s3: %w", err)
 		}
 		s3RT, err = startHTTPRuntime(c.host, c.s3Port, mux, s3.Shutdown)
 		if err != nil {
 			shutdownCtx, cancel := shutdownCtx()
-			filerRT.shutdown(shutdownCtx)
-			volumeRT.shutdown(shutdownCtx)
-			masterRT.shutdown(shutdownCtx)
+			filerRT.Shutdown(shutdownCtx)
+			volumeRT.Shutdown(shutdownCtx)
+			masterRT.Shutdown(shutdownCtx)
 			cancel()
 			return fmt.Errorf("start s3 listener: %w", err)
 		}
@@ -189,13 +189,13 @@ func (c *ServerCommand) Run(ctx context.Context, args []string) error {
 	}
 	if err := reload(); err != nil {
 		shutdownCtx, cancel := shutdownCtx()
-		metricsRT.shutdown(shutdownCtx)
+		metricsRT.Shutdown(shutdownCtx)
 		if s3RT != nil {
-			s3RT.shutdown(shutdownCtx)
+			s3RT.Shutdown(shutdownCtx)
 		}
-		filerRT.shutdown(shutdownCtx)
-		volumeRT.shutdown(shutdownCtx)
-		masterRT.shutdown(shutdownCtx)
+		filerRT.Shutdown(shutdownCtx)
+		volumeRT.Shutdown(shutdownCtx)
+		masterRT.Shutdown(shutdownCtx)
 		cancel()
 		return fmt.Errorf("reload security config: %w", err)
 	}
@@ -205,13 +205,13 @@ func (c *ServerCommand) Run(ctx context.Context, args []string) error {
 	script, err := loadMaintenanceScript(c.masterMaintenanceScripts)
 	if err != nil {
 		shutdownCtx, cancel := shutdownCtx()
-		metricsRT.shutdown(shutdownCtx)
+		metricsRT.Shutdown(shutdownCtx)
 		if s3RT != nil {
-			s3RT.shutdown(shutdownCtx)
+			s3RT.Shutdown(shutdownCtx)
 		}
-		filerRT.shutdown(shutdownCtx)
-		volumeRT.shutdown(shutdownCtx)
-		masterRT.shutdown(shutdownCtx)
+		filerRT.Shutdown(shutdownCtx)
+		volumeRT.Shutdown(shutdownCtx)
+		masterRT.Shutdown(shutdownCtx)
 		cancel()
 		return err
 	}
@@ -229,12 +229,12 @@ func (c *ServerCommand) Run(ctx context.Context, args []string) error {
 
 	shutdownCtx, cancel := shutdownCtx()
 	defer cancel()
-	metricsRT.shutdown(shutdownCtx)
+	metricsRT.Shutdown(shutdownCtx)
 	if s3RT != nil {
-		s3RT.shutdown(shutdownCtx)
+		s3RT.Shutdown(shutdownCtx)
 	}
-	filerRT.shutdown(shutdownCtx)
-	volumeRT.shutdown(shutdownCtx)
-	masterRT.shutdown(shutdownCtx)
+	filerRT.Shutdown(shutdownCtx)
+	volumeRT.Shutdown(shutdownCtx)
+	masterRT.Shutdown(shutdownCtx)
 	return nil
 }

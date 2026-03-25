@@ -10,7 +10,7 @@ import (
 )
 
 func (s *S3ApiServer) getBucketVersioningState(ctx context.Context, bucket string) (string, error) {
-	data, err := s.filerClient.GetBucketMeta(ctx, bucket, "versioning")
+	data, err := s.store.GetBucketMeta(ctx, bucket, "versioning")
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return "", nil
@@ -54,8 +54,8 @@ func (s *S3ApiServer) handleBucketVersioning(w http.ResponseWriter, r *http.Requ
 			return
 		}
 		if cfg.Status == "" {
-			_ = s.filerClient.DeleteBucketMeta(r.Context(), bucket, "versioning")
-		} else if err := s.filerClient.SetBucketMeta(r.Context(), bucket, "versioning", []byte(cfg.Status)); err != nil {
+			_ = s.store.DeleteBucketMeta(r.Context(), bucket, "versioning")
+		} else if err := s.store.SetBucketMeta(r.Context(), bucket, "versioning", []byte(cfg.Status)); err != nil {
 			if errors.Is(err, ErrBucketNotFound) {
 				writeS3Error(w, r, http.StatusNotFound, "NoSuchBucket", "bucket not found")
 				return
@@ -72,7 +72,7 @@ func (s *S3ApiServer) handleBucketVersioning(w http.ResponseWriter, r *http.Requ
 func (s *S3ApiServer) handleBucketPolicy(w http.ResponseWriter, r *http.Request, bucket string) {
 	switch r.Method {
 	case http.MethodGet:
-		data, err := s.filerClient.GetBucketMeta(r.Context(), bucket, "policy")
+		data, err := s.store.GetBucketMeta(r.Context(), bucket, "policy")
 		if err != nil {
 			if errors.Is(err, ErrNotFound) {
 				writeS3Error(w, r, http.StatusNotFound, "NoSuchBucketPolicy", "bucket policy not found")
@@ -95,7 +95,7 @@ func (s *S3ApiServer) handleBucketPolicy(w http.ResponseWriter, r *http.Request,
 			writeS3Error(w, r, http.StatusBadRequest, "MalformedPolicy", "failed to read policy")
 			return
 		}
-		if err := s.filerClient.SetBucketMeta(r.Context(), bucket, "policy", body); err != nil {
+		if err := s.store.SetBucketMeta(r.Context(), bucket, "policy", body); err != nil {
 			if errors.Is(err, ErrBucketNotFound) {
 				writeS3Error(w, r, http.StatusNotFound, "NoSuchBucket", "bucket not found")
 				return
@@ -105,7 +105,7 @@ func (s *S3ApiServer) handleBucketPolicy(w http.ResponseWriter, r *http.Request,
 		}
 		w.WriteHeader(http.StatusNoContent)
 	case http.MethodDelete:
-		if err := s.filerClient.DeleteBucketMeta(r.Context(), bucket, "policy"); err != nil {
+		if err := s.store.DeleteBucketMeta(r.Context(), bucket, "policy"); err != nil {
 			writeS3Error(w, r, http.StatusInternalServerError, "InternalError", err.Error())
 			return
 		}
@@ -118,7 +118,7 @@ func (s *S3ApiServer) handleBucketPolicy(w http.ResponseWriter, r *http.Request,
 func (s *S3ApiServer) handleBucketCORS(w http.ResponseWriter, r *http.Request, bucket string) {
 	switch r.Method {
 	case http.MethodGet:
-		data, err := s.filerClient.GetBucketMeta(r.Context(), bucket, "cors")
+		data, err := s.store.GetBucketMeta(r.Context(), bucket, "cors")
 		if err != nil {
 			if errors.Is(err, ErrNotFound) {
 				writeS3Error(w, r, http.StatusNotFound, "NoSuchCORSConfiguration", "cors config not found")
@@ -148,7 +148,7 @@ func (s *S3ApiServer) handleBucketCORS(w http.ResponseWriter, r *http.Request, b
 		}
 		cfg.Xmlns = s3XMLNS
 		encoded, _ := xml.Marshal(cfg)
-		if err := s.filerClient.SetBucketMeta(r.Context(), bucket, "cors", encoded); err != nil {
+		if err := s.store.SetBucketMeta(r.Context(), bucket, "cors", encoded); err != nil {
 			if errors.Is(err, ErrBucketNotFound) {
 				writeS3Error(w, r, http.StatusNotFound, "NoSuchBucket", "bucket not found")
 				return
@@ -169,7 +169,7 @@ func (s *S3ApiServer) handleCORSPreflight(w http.ResponseWriter, r *http.Request
 		writeS3Error(w, r, http.StatusForbidden, "AccessDenied", "cors preflight denied")
 		return
 	}
-	data, err := s.filerClient.GetBucketMeta(r.Context(), bucket, "cors")
+	data, err := s.store.GetBucketMeta(r.Context(), bucket, "cors")
 	if err != nil {
 		writeS3Error(w, r, http.StatusForbidden, "AccessDenied", "cors preflight denied")
 		return

@@ -344,13 +344,12 @@ type NeedleIndexEntry struct {
 
 // SnapshotLiveNeedleEntries returns live needle entries sorted by physical offset.
 func (v *Volume) SnapshotLiveNeedleEntries() []NeedleIndexEntry {
-	memDb, ok := v.nm.(*MemDb)
-	if !ok || memDb == nil {
+	if v.nm == nil {
 		return nil
 	}
 
-	entries := make([]NeedleIndexEntry, 0, memDb.FileCount())
-	memDb.iterateIndex(func(key types.NeedleId, offset types.Offset, size types.Size) {
+	entries := make([]NeedleIndexEntry, 0, v.nm.FileCount())
+	_ = v.nm.Iterate(func(key types.NeedleId, offset types.Offset, size types.Size) {
 		if size == types.TombstoneFileSize {
 			return
 		}

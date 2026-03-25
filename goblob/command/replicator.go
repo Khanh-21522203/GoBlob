@@ -74,13 +74,13 @@ func (c *ReplicatorCommand) Run(ctx context.Context, args []string) error {
 
 	if err := r.Start(ctx); err != nil && ctx.Err() == nil {
 		shutdownCtx, cancel := shutdownCtx()
-		metricsRT.shutdown(shutdownCtx)
+		metricsRT.Shutdown(shutdownCtx)
 		cancel()
 		return fmt.Errorf("replicator: %w", err)
 	}
 
 	shutdownCtx, cancel := shutdownCtx()
 	defer cancel()
-	metricsRT.shutdown(shutdownCtx)
+	metricsRT.Shutdown(shutdownCtx)
 	return nil
 }

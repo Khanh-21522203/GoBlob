@@ -33,7 +33,7 @@ func (s *S3ApiServer) handleBucketLifecycle(w http.ResponseWriter, r *http.Reque
 			writeS3Error(w, r, http.StatusInternalServerError, "InternalError", err.Error())
 			return
 		}
-		if err := s.filerClient.SetBucketMeta(r.Context(), bucket, "lifecycle.json", encoded); err != nil {
+		if err := s.store.SetBucketMeta(r.Context(), bucket, "lifecycle.json", encoded); err != nil {
 			if errors.Is(err, ErrBucketNotFound) {
 				writeS3Error(w, r, http.StatusNotFound, "NoSuchBucket", "bucket not found")
 				return
@@ -43,7 +43,7 @@ func (s *S3ApiServer) handleBucketLifecycle(w http.ResponseWriter, r *http.Reque
 		}
 		w.WriteHeader(http.StatusOK)
 	case http.MethodGet:
-		raw, err := s.filerClient.GetBucketMeta(r.Context(), bucket, "lifecycle.json")
+		raw, err := s.store.GetBucketMeta(r.Context(), bucket, "lifecycle.json")
 		if err != nil {
 			if errors.Is(err, ErrNotFound) {
 				writeS3Error(w, r, http.StatusNotFound, "NoSuchLifecycleConfiguration", "lifecycle config not found")
@@ -64,7 +64,7 @@ func (s *S3ApiServer) handleBucketLifecycle(w http.ResponseWriter, r *http.Reque
 		cfg.XMLName = xml.Name{Local: "LifecycleConfiguration"}
 		writeXML(w, http.StatusOK, cfg)
 	case http.MethodDelete:
-		if err := s.filerClient.DeleteBucketMeta(r.Context(), bucket, "lifecycle.json"); err != nil {
+		if err := s.store.DeleteBucketMeta(r.Context(), bucket, "lifecycle.json"); err != nil {
 			writeS3Error(w, r, http.StatusInternalServerError, "InternalError", err.Error())
 			return
 		}

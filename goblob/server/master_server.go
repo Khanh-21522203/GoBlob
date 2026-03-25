@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"path/filepath"
 	"strconv"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -55,31 +54,17 @@ func NewMasterServerWithGRPC(mux *http.ServeMux, grpcServer *grpc.Server, opt *M
 
 	logger := obs.New("master").With("server", "master")
 
-	// Create topology
-	topo := topology.NewTopology()
+	// Phase 1: FSM with no callbacks.
+	fsm := raft.NewMasterFSM()
 
-	// Create volume growth manager
-	vg := topology.NewVolumeGrowth(topo)
-
-	// Create sequencer config.
-	seqConfig := &sequence.Config{
-		DataDir:  filepath.Join(opt.MetaDir, "sequencer"),
-		StepSize: 10000,
-	}
-
-	// Raft uses a dedicated port (Port+1) to avoid conflicting with the gRPC listener.
+	// Phase 2: Raft and sequencer, no circular deps.
 	raftPort := opt.RaftPort
 	if raftPort == 0 {
 		raftPort = opt.Port + 1
 	}
-	raftAddr := fmt.Sprintf("%s:%d", opt.Host, raftPort)
-
-	// Create Raft config.
-	// NodeId uses the HTTP address (host:port) so that ToGrpcAddress() on the
-	// leader address converts it to host:grpcPort for volume/filer clients.
 	raftConfig := &raft.RaftConfig{
 		NodeId:             fmt.Sprintf("%s:%d", opt.Host, opt.Port),
-		BindAddr:           raftAddr,
+		BindAddr:           fmt.Sprintf("%s:%d", opt.Host, raftPort),
 		MetaDir:            filepath.Join(opt.MetaDir, "raft"),
 		Peers:              opt.Peers,
 		SingleMode:         len(opt.Peers) == 0,
@@ -91,44 +76,35 @@ func NewMasterServerWithGRPC(mux *http.ServeMux, grpcServer *grpc.Server, opt *M
 		CommitTimeout:      50 * time.Millisecond,
 		MaxAppendEntries:   32,
 	}
+	raftServer, err := raft.NewRaftServer(raftConfig, fsm)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to create Raft server: %w", err)
+	}
 
-	var (
-		sequencer   sequence.Sequencer
-		sequencerMu sync.RWMutex
-		ms          *MasterServer
-	)
+	seqConfig := &sequence.Config{
+		DataDir:  filepath.Join(opt.MetaDir, "sequencer"),
+		StepSize: 10000,
+	}
+	raftSequencer, err := sequence.NewRaftSequencer(seqConfig, raftServer, logger)
+	if err != nil {
+		cancel()
+		_ = raftServer.Shutdown()
+		return nil, fmt.Errorf("failed to create raft sequencer: %w", err)
+	}
 
-	// Create FSM
-	fsm := raft.NewMasterFSM(
-		func(maxFileId uint64) {
-			sequencerMu.RLock()
-			s := sequencer
-			sequencerMu.RUnlock()
-			if s != nil {
-				s.SetMax(maxFileId)
-			}
-		},
-		func(maxVolumeId uint32) {
-			ms.Topo.SetMaxVolumeId(maxVolumeId)
-		},
-		func(topologyId string) {
-			if topologyId != "" {
-				ms.topologyId.Store(topologyId)
-			}
-		},
-	)
-
-	// Create cluster registry
-	clusterReg := cluster.NewClusterRegistry()
-
-	// Create guard (empty whitelist = allow all)
+	// Phase 3: assemble MasterServer, then wire events.
+	topo := topology.NewTopology()
+	vg := topology.NewVolumeGrowth(topo)
 	signingKey, _ := security.GenerateSigningKey(32)
 	guard := security.NewGuard("", signingKey, "")
 
-	ms = &MasterServer{
+	ms := &MasterServer{
 		Topo:                    topo,
 		Vg:                      vg,
-		Cluster:                 clusterReg,
+		Sequencer:               raftSequencer,
+		Raft:                    raftServer,
+		Cluster:                 cluster.NewClusterRegistry(),
 		Guard:                   guard,
 		option:                  opt,
 		volumeGrowthRequestChan: make(chan *topology.VolumeGrowOption, 100),
@@ -137,66 +113,31 @@ func NewMasterServerWithGRPC(mux *http.ServeMux, grpcServer *grpc.Server, opt *M
 		logger:                  logger,
 	}
 
-	raftServer, err := raft.NewRaftServer(raftConfig, fsm, func(isLeader bool) {
-		ms.isLeader.Store(isLeader)
-		if isLeader {
-			obs.MasterLeadershipGauge.Set(1)
-		} else {
-			obs.MasterLeadershipGauge.Set(0)
-		}
-		if isLeader {
-			if err := ms.Raft.Barrier(10 * time.Second); err != nil {
-				ms.logger.Warn("raft barrier failed on leadership", "error", err)
-			}
-			if fsm.GetTopologyId() == "" {
-				topologyID := generateTopologyID()
-				if err := ms.Raft.Apply(raft.TopologyIdCommand{TopologyId: topologyID}, 5*time.Second); err != nil {
-					ms.logger.Warn("failed to initialize topology id", "error", err)
-				} else {
-					ms.topologyId.Store(topologyID)
-				}
-			}
-		} else {
-			ms.logger.Info("lost leadership")
-		}
-	})
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("failed to create Raft server: %w", err)
+	// Prime state from already-committed FSM entries (e.g. after a restart).
+	state := fsm.CommittedState()
+	if state.MaxFileId > 0 {
+		ms.Sequencer.SetMax(state.MaxFileId)
 	}
-	ms.Raft = raftServer
-
-	raftSequencer, err := sequence.NewRaftSequencer(seqConfig, raftServer, logger)
-	if err != nil {
-		cancel()
-		_ = raftServer.Shutdown()
-		return nil, fmt.Errorf("failed to create raft sequencer: %w", err)
+	if state.MaxVolumeId > 0 {
+		ms.Topo.SetMaxVolumeId(state.MaxVolumeId)
 	}
-	ms.Sequencer = raftSequencer
-	sequencerMu.Lock()
-	sequencer = raftSequencer
-	sequencerMu.Unlock()
-	if maxFileID := fsm.GetMaxFileId(); maxFileID > 0 {
-		ms.Sequencer.SetMax(maxFileID)
+	if state.TopologyId != "" {
+		ms.topologyId.Store(state.TopologyId)
 	}
-	if maxVolumeID := fsm.GetMaxVolumeId(); maxVolumeID > 0 {
-		ms.Topo.SetMaxVolumeId(maxVolumeID)
-	}
-	ms.isLeader.Store(ms.Raft.IsLeader())
-	if ms.Raft.IsLeader() {
+	ms.isLeader.Store(raftServer.IsLeader())
+	if raftServer.IsLeader() {
 		obs.MasterLeadershipGauge.Set(1)
-	} else {
-		obs.MasterLeadershipGauge.Set(0)
 	}
-	if topologyID := fsm.GetTopologyId(); topologyID != "" {
-		ms.topologyId.Store(topologyID)
-	}
+
 	ms.Vg.SetMaxVolumeIdReplicator(func(maxVid uint32) error {
-		if ms.Raft == nil {
-			return fmt.Errorf("raft not initialized")
-		}
 		return ms.Raft.Apply(raft.MaxVolumeIdCommand{MaxVolumeId: maxVid}, 5*time.Second)
 	})
+
+	// Subscribe to FSM and leader events.
+	fsmEvents := fsm.Subscribe("master", 64)
+	leaderEvents := raftServer.Subscribe("master", 8)
+	go ms.handleFSMEvents(fsmEvents)
+	go ms.handleLeaderEvents(leaderEvents)
 
 	// Register HTTP routes
 	ms.registerRoutes(mux)
@@ -209,6 +150,59 @@ func NewMasterServerWithGRPC(mux *http.ServeMux, grpcServer *grpc.Server, opt *M
 	go ms.raftStatsWorker()
 
 	return ms, nil
+}
+
+// handleFSMEvents reacts to replicated state changes from the FSM.
+func (ms *MasterServer) handleFSMEvents(ch <-chan raft.StateEvent) {
+	for evt := range ch {
+		switch evt.Kind {
+		case raft.EventMaxFileId:
+			ms.Sequencer.SetMax(evt.MaxFileId)
+		case raft.EventMaxVolumeId:
+			ms.Topo.SetMaxVolumeId(evt.MaxVolumeId)
+		case raft.EventTopologyId:
+			if evt.TopologyId != "" {
+				ms.topologyId.Store(evt.TopologyId)
+			}
+		case raft.EventRestored:
+			if evt.MaxFileId > 0 {
+				ms.Sequencer.SetMax(evt.MaxFileId)
+			}
+			if evt.MaxVolumeId > 0 {
+				ms.Topo.SetMaxVolumeId(evt.MaxVolumeId)
+			}
+			if evt.TopologyId != "" {
+				ms.topologyId.Store(evt.TopologyId)
+			}
+		}
+	}
+}
+
+// handleLeaderEvents reacts to Raft leadership transitions.
+func (ms *MasterServer) handleLeaderEvents(ch <-chan raft.StateEvent) {
+	for evt := range ch {
+		if evt.Kind != raft.EventLeaderChange {
+			continue
+		}
+		isLeader := evt.IsLeader
+		ms.isLeader.Store(isLeader)
+		if isLeader {
+			obs.MasterLeadershipGauge.Set(1)
+			if err := ms.Raft.Barrier(10 * time.Second); err != nil {
+				ms.logger.Warn("raft barrier failed on leadership", "error", err)
+			}
+			// Initialize topology ID only if it has never been set.
+			if tid, _ := ms.topologyId.Load().(string); tid == "" {
+				topologyID := generateTopologyID()
+				if err := ms.Raft.Apply(raft.TopologyIdCommand{TopologyId: topologyID}, 5*time.Second); err != nil {
+					ms.logger.Warn("failed to initialize topology id", "error", err)
+				}
+			}
+		} else {
+			obs.MasterLeadershipGauge.Set(0)
+			ms.logger.Info("lost leadership")
+		}
+	}
 }
 
 // registerRoutes registers HTTP handlers for the master server.

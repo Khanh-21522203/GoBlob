@@ -134,6 +134,14 @@ func (fs *FilerServer) SetStore(store filer.FilerStore) {
 	}
 	fs.dlm = filer.NewDistributedLockManager(store, fs.logger)
 	fs.filer.Dlm = fs.dlm
+	// Inject concrete master-backed implementations if not already set
+	// (allows tests to pre-inject fakes before calling SetStore).
+	if fs.filer.Uploader == nil && len(fs.option.Masters) > 0 {
+		fs.filer.Uploader = &masterUploader{masterAddr: fs.option.Masters[0]}
+	}
+	if fs.filer.Resolver == nil && len(fs.option.Masters) > 0 {
+		fs.filer.Resolver = &masterResolver{masterAddr: fs.option.Masters[0]}
+	}
 }
 
 // Start starts the filer server.
@@ -224,30 +232,20 @@ func (fs *FilerServer) handleFileUpload(w http.ResponseWriter, r *http.Request) 
 
 	if r.ContentLength > inlineLimit || r.ContentLength < 0 {
 		// Large file: split into chunks and store on volume servers.
-		if len(fs.filer.MasterAddresses) == 0 {
+		if fs.filer.Uploader == nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": "no master addresses configured"})
 			return
 		}
-		masterAddr := fs.filer.MasterAddresses[0]
-		opt := &operation.UploadOption{Master: masterAddr}
-		results, err := operation.ChunkUpload(fs.ctx, masterAddr, r.Body, r.ContentLength, 8*1024*1024, opt)
+		chunks, err := fs.filer.Uploader.ChunkUpload(fs.ctx, r.Body, r.ContentLength, 8*1024*1024)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return
 		}
-		chunks := make([]*filer.FileChunk, 0, len(results))
 		var totalSize int64
-		for _, cr := range results {
-			chunks = append(chunks, &filer.FileChunk{
-				FileId:       cr.FileId,
-				Offset:       cr.Offset,
-				Size:         cr.Size,
-				ModifiedTsNs: cr.ModifiedTsNs,
-				ETag:         cr.ETag,
-			})
-			totalSize += cr.Size
+		for _, c := range chunks {
+			totalSize += c.Size
 		}
 		entry.Chunks = chunks
 		entry.Attr.FileSize = uint64(totalSize)
@@ -331,12 +329,11 @@ func (fs *FilerServer) handleFileDownload(w http.ResponseWriter, r *http.Request
 
 	// Chunked content: reassemble from volume servers in chunk order.
 	if len(entry.Chunks) > 0 {
-		if len(fs.filer.MasterAddresses) == 0 {
+		if fs.filer.Resolver == nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": "no master addresses configured"})
 			return
 		}
-		masterAddr := fs.filer.MasterAddresses[0]
 
 		chunks := make([]*filer.FileChunk, len(entry.Chunks))
 		copy(chunks, entry.Chunks)
@@ -357,12 +354,12 @@ func (fs *FilerServer) handleFileDownload(w http.ResponseWriter, r *http.Request
 				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
-			locs, err := operation.LookupVolumeId(fs.ctx, masterAddr, types.VolumeId(vidU))
-			if err != nil || len(locs) == 0 {
+			volURL, err := fs.filer.Resolver.ResolveVolume(fs.ctx, uint32(vidU))
+			if err != nil {
 				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
-			chunkURL := locs[0].Url + "/" + chunk.FileId
+			chunkURL := volURL + "/" + chunk.FileId
 			req, err := http.NewRequestWithContext(fs.ctx, http.MethodGet, chunkURL, nil)
 			if err != nil {
 				w.WriteHeader(http.StatusInternalServerError)
@@ -467,4 +464,44 @@ func (fs *FilerServer) instrumentHTTP(next http.HandlerFunc) http.HandlerFunc {
 		obs.FilerRequestsTotal.WithLabelValues(r.Method, strconv.Itoa(statusCode)).Inc()
 		obs.FilerStoreLatency.WithLabelValues(strings.ToLower(r.Method)).Observe(time.Since(start).Seconds())
 	}
+}
+
+// masterUploader implements filer.Uploader backed by a live master address.
+type masterUploader struct {
+	masterAddr string
+}
+
+func (u *masterUploader) ChunkUpload(ctx context.Context, reader io.Reader, totalSize, chunkSizeBytes int64) ([]*filer.FileChunk, error) {
+	opt := &operation.UploadOption{Master: u.masterAddr}
+	results, err := operation.ChunkUpload(ctx, u.masterAddr, reader, totalSize, chunkSizeBytes, opt)
+	if err != nil {
+		return nil, err
+	}
+	chunks := make([]*filer.FileChunk, 0, len(results))
+	for _, cr := range results {
+		chunks = append(chunks, &filer.FileChunk{
+			FileId:       cr.FileId,
+			Offset:       cr.Offset,
+			Size:         cr.Size,
+			ModifiedTsNs: cr.ModifiedTsNs,
+			ETag:         cr.ETag,
+		})
+	}
+	return chunks, nil
+}
+
+// masterResolver implements filer.Resolver backed by a live master address.
+type masterResolver struct {
+	masterAddr string
+}
+
+func (r *masterResolver) ResolveVolume(ctx context.Context, volumeId uint32) (string, error) {
+	locs, err := operation.LookupVolumeId(ctx, r.masterAddr, types.VolumeId(volumeId))
+	if err != nil {
+		return "", err
+	}
+	if len(locs) == 0 {
+		return "", fmt.Errorf("no locations for volume %d", volumeId)
+	}
+	return locs[0].Url, nil
 }

@@ -35,10 +35,10 @@ func DefaultS3ApiServerOption() *S3ApiServerOption {
 
 // S3ApiServer is an S3-compatible gateway backed by filer metadata.
 type S3ApiServer struct {
-	option      *S3ApiServerOption
-	filerClient *FilerClient
-	iam         *s3iam.IdentityAccessManagement
-	quota       *quota.Manager
+	option *S3ApiServerOption
+	store  FilerGateway
+	iam    *s3iam.IdentityAccessManagement
+	quota  *quota.Manager
 
 	logger *slog.Logger
 }
@@ -51,28 +51,58 @@ func NewS3ApiServer(mux *http.ServeMux, opt *S3ApiServerOption) (*S3ApiServer, e
 	if opt.BucketsPath == "" {
 		opt.BucketsPath = "/buckets"
 	}
-	logger := obs.New("s3").With("server", "s3api")
 
 	filerClient := NewFilerClient(opt.Filers, opt.BucketsPath)
+	var store FilerGateway = filerClient
+	if len(opt.Filers) == 0 {
+		store = nil
+	}
+	return newS3ApiServerWithStore(mux, opt, store)
+}
+
+// NewS3ApiServerWithStore creates an S3ApiServer with an injected FilerGateway.
+// Used in tests to avoid needing a live gRPC filer.
+func NewS3ApiServerWithStore(mux *http.ServeMux, opt *S3ApiServerOption, store FilerGateway) (*S3ApiServer, error) {
+	if opt == nil {
+		opt = DefaultS3ApiServerOption()
+	}
+	if opt.BucketsPath == "" {
+		opt.BucketsPath = "/buckets"
+	}
+	return newS3ApiServerWithStore(mux, opt, store)
+}
+
+func newS3ApiServerWithStore(mux *http.ServeMux, opt *S3ApiServerOption, store FilerGateway) (*S3ApiServer, error) {
+	logger := obs.New("s3").With("server", "s3api")
+
 	var iamClient s3iam.FilerIAMClient
-	if len(opt.Filers) > 0 {
-		iamClient = filerClient
+	if store != nil {
+		iamClient = store
 	}
 	iamMgr, err := s3iam.NewIdentityAccessManagement(iamClient, logger)
 	if err != nil {
 		return nil, fmt.Errorf("initialize iam manager: %w", err)
 	}
 
-	s3 := &S3ApiServer{
-		option:      opt,
-		filerClient: filerClient,
-		iam:         iamMgr,
-		quota:       quota.NewManager(filerClient),
-		logger:      logger,
+	var quotaMgr *quota.Manager
+	if store != nil {
+		quotaMgr = quota.NewManager(store)
 	}
 
-	if err := s3.filerClient.EnsureBucketsRoot(context.Background()); err != nil && err != ErrNoFilerConfigured {
-		return nil, fmt.Errorf("ensure buckets root: %w", err)
+	s3 := &S3ApiServer{
+		option: opt,
+		store:  store,
+		iam:    iamMgr,
+		quota:  quotaMgr,
+		logger: logger,
+	}
+
+	if store != nil {
+		if init, ok := store.(BucketRootInitializer); ok {
+			if err := init.EnsureBucketsRoot(context.Background()); err != nil && err != ErrNoFilerConfigured {
+				return nil, fmt.Errorf("ensure buckets root: %w", err)
+			}
+		}
 	}
 
 	if mux != nil {
@@ -92,7 +122,7 @@ func (s *S3ApiServer) Shutdown() {
 	// so in-memory identity data is GC'd.
 	s.iam = nil
 	s.quota = nil
-	s.filerClient = nil
+	s.store = nil
 }
 
 // ReloadIAM allows tests or integrations to refresh IAM config from filer.
@@ -106,7 +136,7 @@ func (s *S3ApiServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *S3ApiServer) handleReady(w http.ResponseWriter, r *http.Request) {
-	if s == nil || s.filerClient == nil {
+	if s == nil || s.store == nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = w.Write([]byte("NOT READY"))
 		return

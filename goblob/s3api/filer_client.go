@@ -42,13 +42,6 @@ type ObjectInfo struct {
 	ETag         string
 }
 
-type multipartUploadMeta struct {
-	UploadID      string `json:"upload_id"`
-	Bucket        string `json:"bucket"`
-	Key           string `json:"key"`
-	CreatedAtUnix int64  `json:"created_at_unix"`
-}
-
 // FilerClient wraps basic filer gRPC operations used by S3 gateway.
 type FilerClient struct {
 	addresses   []string
@@ -648,7 +641,7 @@ func (fc *FilerClient) CreateMultipartUpload(ctx context.Context, bucket, key, u
 	if err := fc.EnsureDirectory(ctx, rootDir); err != nil {
 		return err
 	}
-	meta := multipartUploadMeta{
+	meta := MultipartMeta{
 		UploadID:      uploadID,
 		Bucket:        bucket,
 		Key:           key,
@@ -675,7 +668,7 @@ func (fc *FilerClient) CreateMultipartUpload(ctx context.Context, bucket, key, u
 	return fc.upsertEntry(ctx, dir, entry)
 }
 
-func (fc *FilerClient) LoadMultipartUpload(ctx context.Context, bucket, key, uploadID string) (*multipartUploadMeta, error) {
+func (fc *FilerClient) LoadMultipartUpload(ctx context.Context, bucket, key, uploadID string) (*MultipartMeta, error) {
 	entry, err := fc.lookupEntry(ctx, fc.multipartMetaPath(bucket, uploadID))
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
@@ -684,7 +677,7 @@ func (fc *FilerClient) LoadMultipartUpload(ctx context.Context, bucket, key, upl
 		return nil, err
 	}
 
-	meta := &multipartUploadMeta{}
+	meta := &MultipartMeta{}
 	if err := json.Unmarshal(entry.GetContent(), meta); err != nil {
 		return nil, err
 	}

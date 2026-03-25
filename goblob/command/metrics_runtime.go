@@ -23,7 +23,7 @@ func startMetricsRuntime(host string, port int, pushURL, pushJob string) *metric
 	return &metricsRuntime{server: ms, cancelPush: cancel}
 }
 
-func (m *metricsRuntime) shutdown(ctx context.Context) {
+func (m *metricsRuntime) Shutdown(ctx context.Context) {
 	if m == nil {
 		return
 	}

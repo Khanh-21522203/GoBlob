@@ -10,7 +10,7 @@ import (
 )
 
 func (s *S3ApiServer) handleListBuckets(w http.ResponseWriter, r *http.Request) {
-	bucketNames, err := s.filerClient.ListBuckets(r.Context())
+	bucketNames, err := s.store.ListBuckets(r.Context())
 	if err != nil {
 		writeS3Error(w, r, http.StatusInternalServerError, "InternalError", err.Error())
 		return
@@ -30,7 +30,7 @@ func (s *S3ApiServer) handleListBuckets(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *S3ApiServer) handleCreateBucket(w http.ResponseWriter, r *http.Request, bucket string) {
-	if err := s.filerClient.CreateBucket(r.Context(), bucket); err != nil {
+	if err := s.store.CreateBucket(r.Context(), bucket); err != nil {
 		switch {
 		case errors.Is(err, ErrBucketExists):
 			writeS3Error(w, r, http.StatusConflict, "BucketAlreadyOwnedByYou", err.Error())
@@ -43,7 +43,7 @@ func (s *S3ApiServer) handleCreateBucket(w http.ResponseWriter, r *http.Request,
 }
 
 func (s *S3ApiServer) handleDeleteBucket(w http.ResponseWriter, r *http.Request, bucket string) {
-	if err := s.filerClient.DeleteBucket(r.Context(), bucket); err != nil {
+	if err := s.store.DeleteBucket(r.Context(), bucket); err != nil {
 		switch {
 		case errors.Is(err, ErrBucketNotFound):
 			writeS3Error(w, r, http.StatusNotFound, "NoSuchBucket", err.Error())
@@ -58,7 +58,7 @@ func (s *S3ApiServer) handleDeleteBucket(w http.ResponseWriter, r *http.Request,
 }
 
 func (s *S3ApiServer) handleHeadBucket(w http.ResponseWriter, r *http.Request, bucket string) {
-	exists, err := s.filerClient.BucketExists(r.Context(), bucket)
+	exists, err := s.store.BucketExists(r.Context(), bucket)
 	if err != nil {
 		writeS3Error(w, r, http.StatusInternalServerError, "InternalError", err.Error())
 		return
@@ -72,7 +72,7 @@ func (s *S3ApiServer) handleHeadBucket(w http.ResponseWriter, r *http.Request, b
 
 func (s *S3ApiServer) handleListObjects(w http.ResponseWriter, r *http.Request, bucket string) {
 	prefix := r.URL.Query().Get("prefix")
-	objects, err := s.filerClient.ListObjects(r.Context(), bucket, prefix)
+	objects, err := s.store.ListObjects(r.Context(), bucket, prefix)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrBucketNotFound):
@@ -129,7 +129,7 @@ func (s *S3ApiServer) handleDeleteObjects(w http.ResponseWriter, r *http.Request
 		if strings.TrimSpace(obj.Key) == "" {
 			continue
 		}
-		_ = s.filerClient.DeleteObject(r.Context(), bucket, obj.Key)
+		_ = s.store.DeleteObject(r.Context(), bucket, obj.Key)
 		deleted = append(deleted, deletedEntry(obj))
 	}
 	writeXML(w, http.StatusOK, deleteObjectsResult{Xmlns: s3XMLNS, Deleted: deleted})

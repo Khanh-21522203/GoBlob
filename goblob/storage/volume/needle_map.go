@@ -30,6 +30,10 @@ type NeedleMap interface {
 	DeletedSize() uint64
 	FileCount() int64
 	DeletedCount() int64
+
+	// Iterate calls fn for every entry in the map (including tombstones).
+	// Used by compaction to avoid concrete type assertions.
+	Iterate(fn func(key types.NeedleId, offset types.Offset, size types.Size)) error
 }
 
 // needleValue holds one index entry in memory.
@@ -293,14 +297,15 @@ func CompactIndex(inputFile, outputFile string) error {
 	return dst.Sync()
 }
 
-// iterateIndex calls fn for every NeedleId/Offset/Size in the in-memory map.
-// Used by compaction.
-func (m *MemDb) iterateIndex(fn func(key types.NeedleId, offset types.Offset, size types.Size)) {
+// Iterate calls fn for every NeedleId/Offset/Size in the in-memory map,
+// including tombstones. Implements the NeedleMap interface for compaction.
+func (m *MemDb) Iterate(fn func(key types.NeedleId, offset types.Offset, size types.Size)) error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for k, v := range m.m {
 		fn(k, v.offset, v.size)
 	}
+	return nil
 }
 
 // CreateVolumeIndex rebuilds an .idx file by scanning a .dat file.
