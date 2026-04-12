@@ -1,455 +1,614 @@
 # GoBlob Architecture Diagrams
 
-## C4 Level 1 — System Context
-
-```mermaid
-flowchart TB
-    subgraph boundary[GoBlob Distributed Blob Store]
-        GOBLOB[("GoBlob\nDistributed Object Store")]
-    end
-
-    CLIENT[("👤 Application Client\nboto3 / HTTP / S3 SDK")]
-    OPS[("👤 Operator\nCLI / Admin API")]
-    EXTFS[("💾 External Storage\nS3 / GCS / Azure")]
-
-    CLIENT -->|"S3 API / HTTP\nPUT/GET/DELETE objects"| GOBLOB
-    OPS -->|"Admin HTTP\nvolume management, topology"| GOBLOB
-    GOBLOB -->|"Tiered storage\noffload to remote"| EXTFS
-```
-
----
-
-## C4 Level 2 — Container Diagram
+## 1. C4 Context — System Boundaries
 
 ```mermaid
 flowchart TB
     subgraph boundary[GoBlob System]
-        direction TB
-
-        subgraph masters[Master Cluster — Raft HA]
-            M1[("⚙️ Master 1\nLeader")]
-            M2[("⚙️ Master 2\nFollower")]
-            M3[("⚙️ Master 3\nFollower")]
-            M1 <-->|Raft consensus| M2
-            M1 <-->|Raft consensus| M3
-        end
-
-        subgraph filers[Filer Layer]
-            F1[("📂 Filer 1\nMetadata + Namespace")]
-            F2[("📂 Filer 2\nMetadata + Namespace")]
-        end
-
-        subgraph volumes[Volume Servers — Data Plane]
-            V1[("💾 Volume Server 1\nDisk A, Disk B")]
-            V2[("💾 Volume Server 2\nDisk C, Disk D")]
-            V3[("💾 Volume Server 3\nDisk E, Disk F")]
-        end
-
-        S3[("🪣 S3 API Gateway\nS3-compatible HTTP")]
-        BOLTDB[("🗄️ BoltDB\nRaft log + stable store")]
-        FSTORE[("🗄️ FilerStore\nLevelDB / SQL / Redis")]
+        GB[("GoBlob\nDistributed Blob Store")]
     end
 
-    CLIENT[("👤 Client")]
-    CLIENT -->|"S3 API"| S3
-    CLIENT -->|"HTTP\nPUT/GET /path"| F1
-    S3 -->|"gRPC FilerService"| F1
-    F1 & F2 -->|"Assign, Lookup\nHTTP"| M1
-    F1 & F2 -->|"Write needle\nHTTP PUT"| V1 & V2 & V3
-    M1 -->|"BoltDB"| BOLTDB
-    F1 & F2 -->|"FilerStore"| FSTORE
-    V1 -->|"Heartbeat\ngRPC"| M1
-    V2 -->|"Heartbeat\ngRPC"| M1
-    V3 -->|"Heartbeat\ngRPC"| M1
-    V1 <-->|"Replication\nHTTP"| V2
-    V1 <-->|"Replication\nHTTP"| V3
+    Client[("👤 Client\nApplication")]
+    S3Client[("🪣 S3 Client\nAWS SDK / boto3")]
+    WebDAVClient[("📁 WebDAV Client\nOS / browser")]
+    AdminOp[("🔧 Operator\nAdmin shell")]
+
+    MetaBackend[("🗄️ Metadata Backend\nLevelDB / Redis / PG / MySQL / Cassandra")]
+    Raft[("⚖️ Raft Consensus\nBoltDB log")]
+    CloudTier[("☁️ Cloud Tier\nS3-compatible store")]
+    Prometheus[("📊 Prometheus\nMetrics scraper")]
+
+    Client     -->|"HTTP assign + PUT/GET blob"| GB
+    S3Client   -->|"S3 REST API (SigV4)"| GB
+    WebDAVClient -->|"WebDAV PROPFIND/PUT/GET"| GB
+    AdminOp    -->|"Admin shell gRPC"| GB
+
+    GB -->|"KV / SQL metadata"| MetaBackend
+    GB -->|"Raft log replication"| Raft
+    GB -->|"Data tiering (future)"| CloudTier
+    GB -->|"Expose /metrics"| Prometheus
 ```
 
 ---
 
-## C4 Level 3 — Master Component
+## 2. C4 Container — Deployable Units
 
 ```mermaid
 flowchart TB
-    subgraph master[MasterServer]
+    subgraph goBlob[GoBlob Binary — single process, multiple roles]
         direction TB
-        subgraph http[HTTP Layer]
-            HA["/dir/assign"]
-            HL["/dir/lookup"]
-            HG["/vol/grow"]
-            HV["/vol/vacuum"]
-            HP["/cluster/peer"]
+
+        subgraph access[Access Layer]
+            S3[("🪣 S3 Gateway\nHTTP SigV4")]
+            WD[("📁 WebDAV Server\nRFC 4918")]
         end
-        subgraph grpc[gRPC Layer]
-            GHB["SendHeartbeat\nstream"]
-            GAP["Assign\nLookupVolume"]
+
+        subgraph meta[Metadata Plane]
+            FL[("📋 Filer Server\nHTTP + gRPC")]
         end
-        subgraph core[Core Services]
-            SEQ["RaftSequencer\nNextFileId(n)"]
-            TOPO["Topology\nDC→Rack→Node→Volume"]
-            VL["VolumeLayout\nwritable + read-only sets"]
-            RAFT["RaftServer\nhashicorp/raft"]
-            FSM["MasterFSM\nMaxFileId, MaxVolumeId"]
+
+        subgraph ctrl[Control Plane]
+            MS[("🎛️ Master Server\nHTTP + gRPC")]
         end
-        subgraph store[Persistence]
-            BOLT["BoltDB\nraft-log.bolt\nraft-stable.bolt"]
-            SNAP["SnapshotStore\n3 retained snapshots"]
+
+        subgraph data[Data Plane]
+            VS[("💾 Volume Server\nHTTP + gRPC")]
+        end
+
+        subgraph consensus[Consensus]
+            RT[("⚖️ Raft\nBoltDB-backed")]
+        end
+
+        subgraph obs[Observability]
+            OB[("📊 Metrics\nPrometheus")]
         end
     end
 
-    HA & HG --> SEQ
-    HA --> TOPO
-    GHB --> TOPO
-    TOPO --> VL
-    SEQ --> RAFT
-    RAFT --> FSM
-    FSM --> BOLT
-    RAFT --> SNAP
+    S3 -->|"filer gRPC"| FL
+    WD -->|"filer gRPC"| FL
+    FL -->|"assign + PUT chunks"| MS
+    FL -->|"PUT blob chunks"| VS
+    MS -->|"Raft.Apply"| RT
+    MS -->|"gRPC AllocateVolume"| VS
+    VS -->|"HTTP replicate"| VS
+
+    subgraph stores[Persistent Stores]
+        LDB[("LevelDB")]
+        RDS[("Redis")]
+        PG[("PostgreSQL")]
+        BOLT[("BoltDB\nRaft log")]
+    end
+
+    FL --> LDB & RDS & PG
+    RT --> BOLT
+    OB -.->|"scrape"| MS & VS & FL
 ```
 
 ---
 
-## C4 Level 3 — Volume Server Component
+## 3. C4 Component — Master Control Plane
 
 ```mermaid
 flowchart TB
-    subgraph vs[VolumeServer]
+    subgraph master[Master Server]
         direction TB
-        subgraph http[HTTP Layer]
-            HW["PUT /{fid}\nhandleWrite"]
-            HR["GET /{fid}\nhandleRead"]
-            HS["GET /status"]
+
+        subgraph http[HTTP / gRPC Handlers]
+            AH[Assign Handler]
+            LH[Lookup Handler]
+            HH[Heartbeat Handler]
+            GH[Grow Handler]
         end
-        subgraph grpc[gRPC Layer]
-            GAV["AllocateVolume"]
-            GVC["VolumeCopy\nCompact"]
+
+        subgraph topo[Topology]
+            TM[TopologyManager]
+            VL[VolumeLayout]
+            DN[DataNode Tree\nDC → Rack → Node]
         end
+
+        subgraph growth[Volume Growth]
+            VG[VolumeGrowth\nauto-grow worker]
+        end
+
+        subgraph seq[Sequencing]
+            RS[RaftSequencer]
+            FS[FileSequencer]
+        end
+
+        subgraph consensus[Raft]
+            RF[RaftServer]
+            FSM[MasterFSM]
+            EB[Event Bus]
+        end
+
+        subgraph guard[Security]
+            GD[Guard\nIP whitelist + JWT]
+        end
+    end
+
+    AH --> GD --> TM
+    LH --> GD --> TM
+    HH --> GD --> TM
+    GH --> VG
+
+    TM --> VL --> DN
+    TM --> RS --> RF --> FSM
+    FSM --> EB
+    VG --> TM
+```
+
+---
+
+## 4. C4 Component — Volume Data Plane
+
+```mermaid
+flowchart TB
+    subgraph volume[Volume Server]
+        direction TB
+
+        subgraph http[HTTP / gRPC Handlers]
+            WH[Write Handler\nPUT /{fid}]
+            RH[Read Handler\nGET /{fid}]
+            DH[Delete Handler]
+            RPH[Replication Handler\nPUT + X-Replication]
+        end
+
         subgraph store[VolumeStore]
-            VOL["Volume\n.dat + .idx files"]
-            NM["NeedleMap\nin-memory index\n16B per blob"]
-            CACHE["LRU BlobCache\nconfigurable max entries"]
+            VM[Volume Manager]
+            VF[Volume Files\n.dat / .idx]
+            NE[Needle Engine\nencode/decode/CRC32]
+            EC[Erasure Coding\n(optional)]
         end
-        subgraph repl[Replication]
-            REP["HTTPReplicator\nparallel write to replicas"]
+
+        subgraph rep[Replication]
+            SY[SyncReplicator\nHTTP fan-out]
+        end
+
+        subgraph cache[Cache]
+            MC[In-Memory LRU\noptional Redis]
+        end
+
+        subgraph guard[Security]
+            GD2[Guard\nIP whitelist + JWT]
         end
     end
 
-    HW --> store
-    HW --> REP
-    HR --> CACHE
-    CACHE -->|miss| VOL
-    VOL --> NM
-    GAV --> VOL
+    WH --> GD2 --> NE --> VM --> VF
+    WH --> SY
+    RH --> GD2 --> MC
+    MC -->|"miss"| VM --> NE
+    RPH --> GD2 --> NE --> VM
 ```
 
 ---
 
-## C4 Level 3 — Filer Component
+## 5. C4 Component — Filer Metadata Service
 
 ```mermaid
 flowchart TB
-    subgraph filer[FilerServer]
+    subgraph filer[Filer Server]
         direction TB
-        subgraph http[HTTP Layer]
-            FW["PUT /{path}"]
-            FR["GET /{path}"]
-            FD["DELETE /{path}"]
-            FL["GET /{dir}/ listing"]
+
+        subgraph http[HTTP / gRPC Handlers]
+            PH[PUT /path]
+            GH2[GET /path]
+            DH2[DELETE /path]
+            LH2[LIST /path]
         end
-        subgraph grpc[gRPC FilerService]
-            GLE["LookupDirectoryEntry"]
-            GLIST["ListEntries"]
-            GCE["CreateEntry / UpdateEntry"]
-            GSUB["SubscribeMetadata\nstream"]
+
+        subgraph ns[Namespace]
+            FS2[Filer\nCreateEntry / FindEntry\nMkdirAll / DeleteEntry]
+            LB[LogBuffer\nring buffer of changes]
+            LM[LockManager\ndistributed KV locks]
         end
-        subgraph core[Core]
-            FILER["Filer\nchunk routing"]
-            LB["LogBuffer\nmutation log segments"]
-            DLM["DistLockManager"]
+
+        subgraph backend[Pluggable Store]
+            ST[FilerStore interface]
+            LD[LevelDB2]
+            RD[Redis3]
+            PG2[Postgres2]
+            MY[MySQL2]
+            CS[Cassandra]
         end
-        subgraph backends[FilerStore Backends]
-            LDB["LevelDB\nembedded"]
-            SQL["MySQL / Postgres\nremote SQL"]
-            REDIS["Redis\nremote KV"]
-            CASS["Cassandra\ndistributed NoSQL"]
-        end
-        subgraph client[Outbound Clients]
-            WCLI["wdclient\nmaster discovery"]
-            OP["operation.Assign()\noperation.Lookup()"]
+
+        subgraph uploader[Chunk Uploader]
+            CU[ChunkUploader\nassign → PUT per chunk]
         end
     end
 
-    FW & FR & FD --> FILER
-    FILER --> core
-    FILER --> client
-    GCE & GSUB --> LB
-    GLE & GLIST --> backends
-    LDB & SQL & REDIS & CASS -.-|implements FilerStore| backends
+    PH --> FS2
+    GH2 --> FS2
+    DH2 --> FS2
+    LH2 --> FS2
+
+    PH -->|"large files"| CU
+    FS2 --> LB
+    FS2 --> ST
+    ST --> LD & RD & PG2 & MY & CS
+    FS2 --> LM --> ST
 ```
 
 ---
 
-## Sequence — File Upload
+## 6. Sequence — Blob Write (full path)
 
 ```mermaid
 sequenceDiagram
     participant C as Client
-    participant F as FilerServer
-    participant M as Master (Leader)
-    participant V1 as VolumeServer (Primary)
-    participant V2 as VolumeServer (Replica)
-    participant FS as FilerStore
+    participant MS as Master
+    participant RT as Raft
+    participant VS as Volume Primary
+    participant VR as Volume Replica
+    participant CA as Cache
 
-    C->>F: PUT /photos/vacation.jpg (body)
-    F->>M: POST /dir/assign?count=N&replication=001
-    M->>M: RaftSequencer.NextFileId(N)
-    M->>M: Topology.PickForWrite()
-    M-->>F: {fid: "3,0a1b2c", locations: [V1, V2]}
-    loop for each chunk
-        F->>V1: PUT /3,0a1b2c (needle bytes)
-        V1->>V1: Volume.WriteNeedle() → .dat + .idx
-        V1->>V2: HTTPReplicator.ReplicatedWrite()
-        V2->>V2: Volume.WriteNeedle()
-        V2-->>V1: 200 OK
-        V1-->>F: {size, etag}
+    C->>MS: POST /dir/assign {collection, replication, count}
+    MS->>MS: Guard.Allowed() [IP + JWT]
+    MS->>MS: Topo.PickForWrite()
+    MS->>RT: Raft.Apply(MaxFileIdCommand)
+    RT-->>MS: fid_start
+    MS->>MS: SignJWT(fid, ttl) [if key present]
+    MS-->>C: {fid, url, publicUrl, auth}
+
+    C->>VS: PUT /{fid} [multipart body + auth header]
+    VS->>VS: Guard.Allowed()
+    VS->>VS: BuildNeedle(request)
+    VS->>VS: store.WriteVolumeNeedle(vid, needle)
+    Note over VS: seek EOF, align 8B, write .dat, update .idx
+
+    par Replicate in parallel
+        VS->>VR: HTTP PUT /{fid} [X-Replication:true]
+        VR->>VR: WriteVolumeNeedle()
+        VR-->>VS: 200 OK
     end
-    F->>FS: InsertEntry(path, Attr, Chunks[])
-    F->>F: LogBuffer.AppendEntry()
-    F-->>C: 201 Created
+
+    VS->>CA: cache.Put(key, blob)
+    VS-->>C: {size, eTag} 201 Created
 ```
 
 ---
 
-## Sequence — File Download
+## 7. Sequence — Blob Read
 
 ```mermaid
 sequenceDiagram
     participant C as Client
-    participant F as FilerServer
-    participant FS as FilerStore
-    participant M as Master
-    participant V as VolumeServer
+    participant MS as Master
+    participant VS as Volume Server
+    participant CA as Cache
 
-    C->>F: GET /photos/vacation.jpg
-    F->>FS: FindEntry("/photos/vacation.jpg")
-    FS-->>F: Entry{Attr, Chunks[{FileId, Offset, Size}]}
-    loop for each chunk
-        F->>M: GET /dir/lookup?volumeId=3
-        M->>M: Topology.GetVolumeLayout(3)
-        M-->>F: locations: [V1-addr, V2-addr]
-        F->>V: GET /3,0a1b2c
-        V->>V: ReadNeedleByFileId() → verify Cookie
-        V-->>F: needle data
+    C->>MS: GET /dir/lookup?volumeId=5
+    MS-->>C: {locations: [{url, publicUrl}]}
+
+    C->>VS: GET /{fid}
+    VS->>VS: Guard.Allowed()
+    VS->>CA: cache.Get(key)
+
+    alt Cache hit
+        CA-->>VS: blob bytes
+        VS-->>C: 200 blob bytes [X-Cache:HIT]
+    else Cache miss
+        VS->>VS: idx.Get(needleId) → (offset, size)
+        VS->>VS: dat.ReadAt(offset, size)
+        VS->>VS: needle.VerifyCRC32()
+        VS->>CA: cache.Put(key, blob)
+        VS-->>C: 200 blob bytes
     end
-    F-->>C: 200 OK (reassembled stream)
 ```
 
 ---
 
-## Sequence — S3 PutObject
+## 8. Sequence — S3 PutObject
 
 ```mermaid
 sequenceDiagram
-    participant CLI as S3 Client (boto3)
-    participant S3 as S3ApiServer
-    participant F as FilerServer (gRPC)
-    participant M as Master
-    participant V as VolumeServer
+    participant SC as S3 Client
+    participant GW as S3 Gateway
+    participant IA as IAM
+    participant QM as QuotaManager
+    participant FL as Filer
+    participant MS as Master
+    participant VS as Volume
 
-    CLI->>S3: PUT /bucket/key (SigV4 signed)
-    S3->>S3: IAM.Authenticate() + Quota.Check()
-    S3->>F: gRPC CreateEntry(/buckets/bucket/key)
-    F->>M: Assign FileIds
-    M-->>F: fids + locations
-    F->>V: Write needle(s)
-    V-->>F: OK
-    F->>F: InsertEntry metadata
-    F-->>S3: OK
-    S3-->>CLI: 200 OK (ETag header)
+    SC->>GW: PUT /<bucket>/<key> [SigV4 signed]
+    GW->>GW: s3auth.VerifyRequest() [SigV4]
+    GW->>IA: Authenticate(accessKey)
+    IA-->>GW: identity
+    GW->>IA: IsAuthorized(s3:PutObject, bucket/key)
+    IA-->>GW: allow/deny
+
+    GW->>QM: CheckQuota(bucket, size)
+    QM-->>GW: ok
+
+    GW->>FL: store.PutObject(bucket, key, body)
+
+    loop per 100MB chunk
+        FL->>MS: POST /dir/assign
+        MS-->>FL: {fid, url}
+        FL->>VS: PUT /{fid} [chunk bytes]
+        VS-->>FL: {size, eTag}
+    end
+
+    FL->>FL: CreateEntry(chunks, extended metadata)
+    FL-->>GW: ok
+
+    GW-->>SC: 200 OK [ETag header]
 ```
 
 ---
 
-## Sequence — Raft Leader Election & Sequencer
+## 9. Sequence — Raft Leader Election & ID Sequencing
 
 ```mermaid
 sequenceDiagram
-    participant M1 as Master 1 (Candidate)
-    participant M2 as Master 2
-    participant M3 as Master 3
-    participant FSM as MasterFSM
-    participant BOLT as BoltDB
+    participant M1 as Master-1 (candidate)
+    participant M2 as Master-2
+    participant M3 as Master-3
+    participant FS as FileSequencer
+    participant EV as EventBus
 
-    Note over M1,M3: ElectionTimeout fires on M1
+    Note over M1,M3: Leader election
     M1->>M2: RequestVote(term=5)
     M1->>M3: RequestVote(term=5)
-    M2-->>M1: VoteGranted
-    M3-->>M1: VoteGranted
-    Note over M1: Quorum reached — M1 is Leader
-    M1->>M1: Raft.Apply(MaxFileIdCommand{delta=1000})
-    M1->>BOLT: Append log entry
-    M1->>M2: AppendEntries(log[5])
-    M1->>M3: AppendEntries(log[5])
-    M2-->>M1: ACK
-    M3-->>M1: ACK
-    M1->>FSM: Apply(MaxFileIdCommand)
-    FSM-->>M1: EventMaxFileId{newMax=5000}
-    Note over M1: NextFileId returns [4001..5000]
+    M2-->>M1: vote granted
+    M3-->>M1: vote granted
+    M1->>EV: publish StateEvent{Leader: M1}
+
+    Note over M1: ID allocation
+    M1->>M1: Raft.Apply(MaxFileIdCommand{count: 100})
+    M1->>M2: AppendEntries(MaxFileIdCommand)
+    M1->>M3: AppendEntries(MaxFileIdCommand)
+    M2-->>M1: ack
+    M3-->>M1: ack
+    M1->>FS: FSM.Apply → update maxFileId
+    FS-->>M1: {start: 10001, end: 10100}
 ```
 
 ---
 
-## Volume Lifecycle — State Diagram
+## 10. State — Volume Lifecycle
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Growing : AllocateVolume (Master assigns)
-    Growing --> Writable : Volume reaches node
-    Writable --> ReadOnly : Volume full (8GB) OR manual seal
-    ReadOnly --> Vacuuming : Vacuum triggered (>30% deleted)
-    Vacuuming --> ReadOnly : Compact complete
-    ReadOnly --> Deleting : DeleteVolume command
-    Writable --> Deleting : Force delete
-    Deleting --> [*] : Files removed from disk
+    [*] --> Allocated : Master AllocateVolume RPC
+
+    Allocated --> Writable : Heartbeat received
+    Writable --> ReadOnly : Capacity full OR\ncompaction scheduled
+    ReadOnly --> Writable : After compaction
+    Writable --> Replica : Replication role assigned
+
+    Replica --> Writable : Primary failure + promotion
+
+    ReadOnly --> Compacting : Compact triggered
+    Compacting --> ReadOnly : Compaction complete
+
+    ReadOnly --> Deleted : Admin delete
+    Deleted --> [*]
 ```
 
 ---
 
-## Topology Tree
+## 11. State — Filer Entry Lifecycle
 
 ```mermaid
-flowchart TD
-    ROOT["Root\n(cluster)"]
-    DC1["DataCenter: dc1"]
-    DC2["DataCenter: dc2"]
-    R1["Rack: rack1"]
-    R2["Rack: rack2"]
-    R3["Rack: rack3"]
-    DN1["DataNode\n10.0.0.1:8080"]
-    DN2["DataNode\n10.0.0.2:8080"]
-    DN3["DataNode\n10.0.0.3:8080"]
-    D1["Disk: /data1\nmaxVol=100"]
-    D2["Disk: /data2\nmaxVol=100"]
-    D3["Disk: /data3\nmaxVol=100"]
-    V1["Vol 1 (RW)\ncol=photos, rep=001"]
-    V2["Vol 2 (RO)\ncol=photos, rep=001"]
-    V3["Vol 3 (RW)\ncol=logs, rep=000"]
+stateDiagram-v2
+    [*] --> Created : PUT /path or S3 PutObject
 
-    ROOT --> DC1 & DC2
-    DC1 --> R1 & R2
-    DC2 --> R3
-    R1 --> DN1
-    R2 --> DN2
-    R3 --> DN3
-    DN1 --> D1
-    DN2 --> D2
-    DN3 --> D3
-    D1 --> V1 & V2
-    D2 --> V1
-    D3 --> V3
+    Created --> Updated : PUT /path (overwrite)\nor S3 PutObject (same key)
+    Updated --> Updated : subsequent overwrites
+
+    Created --> Chunked : file > 64KB\n(chunked upload)
+    Chunked --> Created : all chunks committed
+
+    Created --> Deleted : DELETE /path\nor S3 DeleteObject
+    Updated --> Deleted : DELETE /path
+
+    Deleted --> [*]
+
+    Created --> Versioned : S3 versioning enabled
+    Versioned --> Deleted : delete marker placed
 ```
 
 ---
 
-## Replication Placement — ReplicaPlacement Encoding
-
-```mermaid
-flowchart LR
-    subgraph rp[ReplicaPlacement byte: 0x21 = rep 021]
-        direction LR
-        B0["bits 7-6\nDifferentDC = 0\n(all in same DC)"]
-        B1["bits 5-2\nDifferentRack = 2\n(across 2 racks)"]
-        B2["bits 1-0\nSameRack = 1\n(one extra on same rack)"]
-    end
-
-    rp -->|Total copies = DC+Rack+Rack+1| TOTAL["3 copies total"]
-```
-
----
-
-## Needle Storage Format — Volume File Layout
-
-```mermaid
-flowchart TD
-    subgraph dat[".dat file (append-only)"]
-        N1["Needle 1 — Header 16B | Data | Footer 8B"]
-        N2["Needle 2 — Header 16B | Data | Footer 8B"]
-        N3["Needle 3 deleted — Header 16B | Size=0 | Footer 8B"]
-        N1 --> N2 --> N3
-    end
-
-    subgraph idx[".idx file — 16B per entry"]
-        I1["NeedleId → Offset, Size"]
-        I2["NeedleId → Offset, Size"]
-        I3["NeedleId → Offset=0, Size=0 tombstone"]
-        I1 --- I2 --- I3
-    end
-
-    subgraph mem["NeedleMap in-memory"]
-        M1["NeedleId → NeedleValue Offset/8, Size"]
-    end
-
-    dat -->|"each write appends and updates index"| idx
-    idx -->|"loaded on startup"| mem
-```
-
----
-
-## FilerStore — Entry Data Model
+## 12. Data Model — Core Types
 
 ```mermaid
 classDiagram
-    class Entry {
-        +FullPath path
-        +Attr attr
-        +FileChunk[] chunks
-        +[]byte content
-        +map extended
-        +HardLinkId hardLinkId
-        +Remote remote
+    class FileId {
+        +VolumeId volumeId
+        +NeedleId needleId
+        +Cookie cookie
+        +String() string
     }
-    class Attr {
-        +os.FileMode mode
-        +time.Time mtime
-        +string mimeType
-        +string replication
-        +string collection
+
+    class Needle {
+        +Cookie cookie
+        +NeedleId id
+        +uint32 dataSize
+        +[]byte data
+        +string name
+        +string mime
+        +[]byte pairs
+        +int64 lastModified
         +TTL ttl
-        +string userName
-        +string groupName
+        +uint32 checksum
+        +int64 appendAtNs
     }
+
+    class Volume {
+        +VolumeId id
+        +string collection
+        +NeedleVersion version
+        +DiskType diskType
+        +ReplicationFactor replication
+        +bool readOnly
+        +WriteNeedle(n Needle)
+        +ReadNeedle(fid FileId) Needle
+        +DeleteNeedle(nid NeedleId)
+        +Compact()
+    }
+
+    class Entry {
+        +FullPath fullPath
+        +Attr attr
+        +[]byte content
+        +[]FileChunk chunks
+        +map extended
+    }
+
     class FileChunk {
         +string fileId
         +int64 offset
-        +uint64 size
-        +int64 modifiedTsNs
-        +string etag
+        +int64 size
+        +string eTag
         +bool isCompressed
     }
-    class Remote {
-        +string storageType
-        +string key
-        +string bucket
+
+    class DataNode {
+        +ServerAddress addr
+        +DiskType diskType
+        +int64 freeSpace
+        +[]VolumeId volumes
+        +IsWritable() bool
     }
 
-    Entry "1" *-- "1" Attr : has
-    Entry "1" *-- "*" FileChunk : contains
-    Entry --> Remote : optional
+    class Topology {
+        +[]DataCenter datacenters
+        +GetOrCreateVolumeLayout()
+        +PickForWrite(option)
+        +ProcessJoinMessage(hb)
+    }
+
+    FileId --> Needle : references
+    Volume "1" *-- "*" Needle : stores
+    Entry "1" *-- "*" FileChunk : composed of
+    FileChunk --> FileId : resolved to
+    Topology "1" *-- "*" DataNode : manages
+    DataNode "1" *-- "*" Volume : hosts
 ```
 
 ---
 
-## Security Layer
+## 13. ER — Filer Metadata Schema (logical)
+
+```mermaid
+erDiagram
+    ENTRY ||--o{ FILE_CHUNK : "has (chunked)"
+    ENTRY }o--|| DIRECTORY : "child of"
+    ENTRY ||--o{ KV_EXTENDED : "has metadata"
+    BUCKET ||--o{ ENTRY : "contains"
+    IAM_IDENTITY ||--o{ IAM_POLICY : "has"
+    IAM_POLICY ||--o{ BUCKET : "governs"
+
+    ENTRY {
+        string full_path PK
+        int64  mtime
+        int64  ctime
+        uint32 mode
+        string mime
+        int64  file_size
+        bytes  content
+        string collection
+        string replication
+        string ttl
+        bytes  extended_json
+    }
+
+    FILE_CHUNK {
+        string fid PK
+        string entry_path FK
+        int64  offset
+        int64  size
+        string etag
+        bool   is_compressed
+    }
+
+    BUCKET {
+        string name PK
+        string owner
+        string versioning
+        bytes  acl_json
+        bytes  lifecycle_json
+    }
+
+    IAM_IDENTITY {
+        string access_key PK
+        string secret_key
+        string name
+        string account_id
+    }
+
+    IAM_POLICY {
+        string identity FK
+        string action
+        string resource
+        string effect
+    }
+```
+
+---
+
+## 14. Flowchart — Volume Growth Decision
+
+```mermaid
+flowchart TD
+    A([Assign Request]) --> B{Has writable volume\nfor layout?}
+    B -->|Yes| C[Pick volume for write]
+    B -->|No| D[Enqueue VolumeGrowOption]
+
+    D --> E[processVolumeGrowRequests\nbackground loop]
+    E --> F{Writable ratio\n≥ 90%?}
+    F -->|Yes| G[Skip grow]
+    F -->|No| H[VolumeGrowth.GrowByType]
+
+    H --> I[Find candidate DataNodes\nby DiskType + Replication]
+    I --> J{Enough candidates?}
+    J -->|No| K[Return ErrNoFreeVolumes]
+    J -->|Yes| L[Reserve slots on DataNodes]
+
+    L --> M[gRPC AllocateVolume\nto each candidate]
+    M --> N[Update Topology\nadd new volumes]
+    N --> C
+
+    C --> O[Sequencer.NextFileId]
+    O --> P([Return fid + url])
+```
+
+---
+
+## 15. Flowchart — Replication Pipeline (Async)
 
 ```mermaid
 flowchart LR
-    subgraph sec[Security Middleware Stack]
-        direction TB
-        IP["IPWhitelist\nCIDR allow-list"]
-        RATE["RateLimiter\nper-IP token bucket"]
-        JWT["JWTAuth\nHS256/RS256 Bearer token"]
-        TLS["TLS\ncert + key, optional mTLS"]
+    subgraph source[Source Cluster]
+        SF[Source Filer]
+        SLB[LogBuffer\nring buffer]
+        SF --> SLB
     end
 
-    CLIENT["Client"] -->|HTTPS| TLS --> IP --> RATE --> JWT --> HANDLER["Handler"]
+    subgraph replicator[Async Replicator Process]
+        direction TB
+        SUB[Subscribe\nMetadata stream]
+        CLS[Classify event\ncreate/update/delete/rename]
+        FETCH[Fetch entry + chunks\nfrom source volumes]
+        ASSIGN[Assign target volumes\nfrom target master]
+        PUSH[PUT chunks to\ntarget volumes]
+        UPSERT[Create/Update/Delete\ntarget entry]
+        METRICS[Record lag + status\nPrometheus]
+    end
+
+    subgraph target[Target Cluster]
+        TM[Target Master]
+        TV[Target Volume]
+        TF[Target Filer]
+    end
+
+    SLB -->|"gRPC SubscribeMetadata"| SUB
+    SUB --> CLS --> FETCH --> ASSIGN
+    ASSIGN -->|"POST /dir/assign"| TM
+    ASSIGN --> PUSH
+    PUSH -->|"PUT /{fid}"| TV
+    PUSH --> UPSERT
+    UPSERT -->|"filer gRPC"| TF
+    UPSERT --> METRICS
 ```
