@@ -17,6 +17,7 @@ import (
 	"GoBlob/goblob/cluster"
 	"GoBlob/goblob/config"
 	"GoBlob/goblob/consensus"
+	"GoBlob/goblob/consensus/hashicorpraft"
 	"GoBlob/goblob/obs"
 	"GoBlob/goblob/pb/master_pb"
 	"GoBlob/goblob/raft"
@@ -63,7 +64,7 @@ func NewMasterServerWithGRPC(mux *http.ServeMux, grpcServer *grpc.Server, opt *M
 	if raftPort == 0 {
 		raftPort = opt.Port + 1
 	}
-	raftConfig := &raft.RaftConfig{
+	raftConfig := &hashicorpraft.Config{
 		NodeId:             fmt.Sprintf("%s:%d", opt.Host, opt.Port),
 		BindAddr:           fmt.Sprintf("%s:%d", opt.Host, raftPort),
 		MetaDir:            filepath.Join(opt.MetaDir, "raft"),
@@ -77,7 +78,7 @@ func NewMasterServerWithGRPC(mux *http.ServeMux, grpcServer *grpc.Server, opt *M
 		CommitTimeout:      50 * time.Millisecond,
 		MaxAppendEntries:   32,
 	}
-	raftServer, err := raft.NewRaftServer(raftConfig, fsm)
+	raftServer, err := hashicorpraft.NewEngine(raftConfig, fsm)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("failed to create Raft server: %w", err)
