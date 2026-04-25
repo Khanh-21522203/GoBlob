@@ -10,33 +10,57 @@ import (
 	"sync"
 	"time"
 
+	"GoBlob/goblob/consensus"
+
 	"github.com/hashicorp/raft"
 	raftboltdb "github.com/hashicorp/raft-boltdb/v2"
 )
 
-// RaftServer is the interface the rest of the system uses to interact with Raft.
-type RaftServer interface {
-	IsLeader() bool
-	// LeaderAddress returns the gRPC address of the current leader, or "" if unknown.
-	LeaderAddress() string
-	// Apply submits a command to the Raft log and waits for consensus.
-	// Returns error if not leader or consensus times out.
-	Apply(cmd RaftCommand, timeout time.Duration) error
-	// Barrier waits until all log entries are applied to the FSM.
-	Barrier(timeout time.Duration) error
-	AddPeer(addr string) error
-	RemovePeer(addr string) error
-	Stats() map[string]string
-	Shutdown() error
-	// Subscribe registers a named observer and returns its receive channel.
-	Subscribe(name string, bufSize int) <-chan StateEvent
-	// Unsubscribe removes a named observer and closes its channel.
-	Unsubscribe(name string)
+type RaftServer = consensus.Engine
+
+type consensusEventBus struct {
+	mu          sync.RWMutex
+	subscribers map[string]chan consensus.Event
+}
+
+func newConsensusEventBus() consensusEventBus {
+	return consensusEventBus{subscribers: make(map[string]chan consensus.Event)}
+}
+
+func (b *consensusEventBus) Subscribe(name string, bufSize int) <-chan consensus.Event {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if old, ok := b.subscribers[name]; ok {
+		close(old)
+	}
+	ch := make(chan consensus.Event, bufSize)
+	b.subscribers[name] = ch
+	return ch
+}
+
+func (b *consensusEventBus) Unsubscribe(name string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if ch, ok := b.subscribers[name]; ok {
+		close(ch)
+		delete(b.subscribers, name)
+	}
+}
+
+func (b *consensusEventBus) publish(e consensus.Event) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	for _, ch := range b.subscribers {
+		select {
+		case ch <- e:
+		default:
+		}
+	}
 }
 
 // raftServerImpl is the concrete implementation of RaftServer.
 type raftServerImpl struct {
-	EventBus
+	eventBus      consensusEventBus
 	cfg           *RaftConfig
 	raft          *raft.Raft
 	fsm           *MasterFSM
@@ -58,7 +82,7 @@ func NewRaftServer(cfg *RaftConfig, fsm *MasterFSM) (RaftServer, error) {
 	}
 
 	rs := &raftServerImpl{
-		EventBus:      newEventBus(),
+		eventBus:      newConsensusEventBus(),
 		cfg:           cfg,
 		fsm:           fsm,
 		leaderChClose: make(chan struct{}),
@@ -187,7 +211,7 @@ func (rs *raftServerImpl) observeLeader() {
 	for {
 		select {
 		case isLeader := <-rs.raft.LeaderCh():
-			rs.publish(StateEvent{Kind: EventLeaderChange, IsLeader: isLeader})
+			rs.eventBus.publish(consensus.Event{Kind: consensus.EventLeaderChange, IsLeader: isLeader})
 		case <-rs.leaderChClose:
 			return
 		}
@@ -210,7 +234,7 @@ func (rs *raftServerImpl) LeaderAddress() string {
 }
 
 // Apply submits a command to the Raft log and waits for consensus.
-func (rs *raftServerImpl) Apply(cmd RaftCommand, timeout time.Duration) error {
+func (rs *raftServerImpl) Apply(cmd consensus.Command, timeout time.Duration) error {
 	if !rs.IsLeader() {
 		return fmt.Errorf("not leader, current leader: %s", rs.LeaderAddress())
 	}
@@ -253,6 +277,14 @@ func (rs *raftServerImpl) RemovePeer(addr string) error {
 // Stats returns Raft runtime statistics.
 func (rs *raftServerImpl) Stats() map[string]string {
 	return rs.raft.Stats()
+}
+
+func (rs *raftServerImpl) Subscribe(name string, bufSize int) <-chan consensus.Event {
+	return rs.eventBus.Subscribe(name, bufSize)
+}
+
+func (rs *raftServerImpl) Unsubscribe(name string) {
+	rs.eventBus.Unsubscribe(name)
 }
 
 // Shutdown gracefully shuts down the Raft server and closes all stores.

@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"GoBlob/goblob/consensus"
+
 	"github.com/hashicorp/raft"
 )
 
@@ -434,8 +436,8 @@ func (m *mockRaftServer) AddPeer(_ string) error                     { return ni
 func (m *mockRaftServer) RemovePeer(_ string) error                  { return nil }
 func (m *mockRaftServer) Stats() map[string]string                   { return nil }
 func (m *mockRaftServer) Shutdown() error                            { return nil }
-func (m *mockRaftServer) Subscribe(_ string, bufSize int) <-chan StateEvent {
-	return make(chan StateEvent, bufSize)
+func (m *mockRaftServer) Subscribe(_ string, bufSize int) <-chan consensus.Event {
+	return make(chan consensus.Event, bufSize)
 }
 func (m *mockRaftServer) Unsubscribe(_ string) {}
 

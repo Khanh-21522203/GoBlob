@@ -2,7 +2,7 @@ package raft
 
 import "sync"
 
-// EventKind identifies the type of replicated state change.
+// EventKind identifies the type of replicated master-state change.
 type EventKind uint8
 
 const (
@@ -15,8 +15,6 @@ const (
 	// EventRestored is published after FSM.Restore completes.
 	// All three scalar fields are valid.
 	EventRestored
-	// EventLeaderChange is published when Raft leadership changes.
-	EventLeaderChange
 )
 
 // StateEvent is an immutable description of a single replicated transition.
@@ -26,7 +24,6 @@ type StateEvent struct {
 	MaxFileId   uint64 // valid for EventMaxFileId and EventRestored
 	MaxVolumeId uint32 // valid for EventMaxVolumeId and EventRestored
 	TopologyId  string // valid for EventTopologyId and EventRestored
-	IsLeader    bool   // valid for EventLeaderChange
 }
 
 // EventBus is a thread-safe fan-out dispatcher for StateEvents.

@@ -6,14 +6,12 @@ import (
 	"io"
 	"sync"
 
+	"GoBlob/goblob/consensus"
+
 	"github.com/hashicorp/raft"
 )
 
-// RaftCommand is a command that can be submitted to the Raft log.
-type RaftCommand interface {
-	Type() string
-	Encode() ([]byte, error)
-}
+type RaftCommand = consensus.Command
 
 // MaxFileIdCommand advances the sequencer's max file ID.
 // Applied whenever the master issues a batch of file IDs.
@@ -237,7 +235,7 @@ func (s *masterFSMSnapshot) Release() {}
 
 // encodeLogEntry serializes a RaftCommand into a LogEntry JSON byte slice
 // suitable for passing to raft.Raft.Apply.
-func encodeLogEntry(cmd RaftCommand) ([]byte, error) {
+func encodeLogEntry(cmd consensus.Command) ([]byte, error) {
 	payload, err := cmd.Encode()
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode command payload: %w", err)

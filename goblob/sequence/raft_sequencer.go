@@ -6,13 +6,14 @@ import (
 	"sync"
 	"time"
 
+	"GoBlob/goblob/consensus"
 	"GoBlob/goblob/obs"
 	"GoBlob/goblob/raft"
 )
 
 // RaftApplier is the subset of raft.RaftServer used by the sequencer.
 type RaftApplier interface {
-	Apply(cmd raft.RaftCommand, timeout time.Duration) error
+	Apply(cmd consensus.Command, timeout time.Duration) error
 }
 
 // RaftSequencer wraps FileSequencer and replicates the max file ID via Raft.

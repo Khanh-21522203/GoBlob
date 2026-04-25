@@ -16,6 +16,7 @@ import (
 
 	"GoBlob/goblob/cluster"
 	"GoBlob/goblob/config"
+	"GoBlob/goblob/consensus"
 	"GoBlob/goblob/obs"
 	"GoBlob/goblob/pb/master_pb"
 	"GoBlob/goblob/raft"
@@ -30,7 +31,7 @@ type MasterServer struct {
 	Topo                    *topology.Topology
 	Vg                      *topology.VolumeGrowth
 	Sequencer               sequence.Sequencer
-	Raft                    raft.RaftServer
+	Raft                    consensus.Engine
 	Cluster                 *cluster.ClusterRegistry
 	Guard                   *security.Guard
 	option                  *MasterOption
@@ -179,9 +180,9 @@ func (ms *MasterServer) handleFSMEvents(ch <-chan raft.StateEvent) {
 }
 
 // handleLeaderEvents reacts to Raft leadership transitions.
-func (ms *MasterServer) handleLeaderEvents(ch <-chan raft.StateEvent) {
+func (ms *MasterServer) handleLeaderEvents(ch <-chan consensus.Event) {
 	for evt := range ch {
-		if evt.Kind != raft.EventLeaderChange {
+		if evt.Kind != consensus.EventLeaderChange {
 			continue
 		}
 		isLeader := evt.IsLeader
