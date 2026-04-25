@@ -21,9 +21,10 @@ type ServerCommand struct {
 	pushgatewayURL string
 	pushgatewayJob string
 
-	masterPort     int
-	masterGRPCPort int
-	masterMetaDir  string
+	masterPort       int
+	masterGRPCPort   int
+	masterMetaDir    string
+	masterRaftEngine string
 
 	volumePort     int
 	volumeGRPCPort int
@@ -62,6 +63,7 @@ func (c *ServerCommand) SetFlags(fs *flag.FlagSet) {
 	fs.IntVar(&c.masterPort, "master.port", 9333, "master HTTP port")
 	fs.IntVar(&c.masterGRPCPort, "master.grpc.port", 19333, "master gRPC port")
 	fs.StringVar(&c.masterMetaDir, "master.mdir", filepath.Join(".", "tmp", "master"), "master metadata directory")
+	fs.StringVar(&c.masterRaftEngine, "master.raft.engine", server.RaftEngineHashicorp, "master consensus engine (hashicorp|native)")
 
 	fs.IntVar(&c.volumePort, "volume.port", 8080, "volume HTTP port")
 	fs.IntVar(&c.volumeGRPCPort, "volume.grpc.port", 18080, "volume gRPC port")
@@ -94,6 +96,7 @@ func (c *ServerCommand) Run(ctx context.Context, args []string) error {
 	masterOpt.Port = c.masterPort
 	masterOpt.GRPCPort = c.masterGRPCPort
 	masterOpt.MetaDir = c.masterMetaDir
+	masterOpt.RaftEngine = c.masterRaftEngine
 
 	masterRT, err := startMasterRuntime(masterOpt)
 	if err != nil {

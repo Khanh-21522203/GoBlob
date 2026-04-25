@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -18,6 +20,7 @@ import (
 	"GoBlob/goblob/config"
 	"GoBlob/goblob/consensus"
 	"GoBlob/goblob/consensus/hashicorpraft"
+	nativeraft "GoBlob/goblob/consensus/native"
 	"GoBlob/goblob/obs"
 	"GoBlob/goblob/pb/master_pb"
 	"GoBlob/goblob/raft"
@@ -60,25 +63,7 @@ func NewMasterServerWithGRPC(mux *http.ServeMux, grpcServer *grpc.Server, opt *M
 	fsm := raft.NewMasterFSM()
 
 	// Phase 2: Raft and sequencer, no circular deps.
-	raftPort := opt.RaftPort
-	if raftPort == 0 {
-		raftPort = opt.Port + 1
-	}
-	raftConfig := &hashicorpraft.Config{
-		NodeId:             fmt.Sprintf("%s:%d", opt.Host, opt.Port),
-		BindAddr:           fmt.Sprintf("%s:%d", opt.Host, raftPort),
-		MetaDir:            filepath.Join(opt.MetaDir, "raft"),
-		Peers:              opt.Peers,
-		SingleMode:         len(opt.Peers) == 0,
-		SnapshotThreshold:  10000,
-		SnapshotInterval:   2 * time.Minute,
-		HeartbeatTimeout:   1 * time.Second,
-		ElectionTimeout:    1 * time.Second,
-		LeaderLeaseTimeout: 500 * time.Millisecond,
-		CommitTimeout:      50 * time.Millisecond,
-		MaxAppendEntries:   32,
-	}
-	raftServer, err := hashicorpraft.NewEngine(raftConfig, fsm)
+	raftServer, err := newMasterConsensusEngine(opt, fsm)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("failed to create Raft server: %w", err)
@@ -152,6 +137,96 @@ func NewMasterServerWithGRPC(mux *http.ServeMux, grpcServer *grpc.Server, opt *M
 	go ms.raftStatsWorker()
 
 	return ms, nil
+}
+
+func newMasterConsensusEngine(opt *MasterOption, fsm *raft.MasterFSM) (consensus.Engine, error) {
+	engine := strings.ToLower(strings.TrimSpace(opt.RaftEngine))
+	if engine == "" {
+		engine = RaftEngineHashicorp
+	}
+	switch engine {
+	case RaftEngineHashicorp:
+		raftPort := opt.RaftPort
+		if raftPort == 0 {
+			raftPort = opt.Port + 1
+		}
+		return hashicorpraft.NewEngine(&hashicorpraft.Config{
+			NodeId:             fmt.Sprintf("%s:%d", opt.Host, opt.Port),
+			BindAddr:           fmt.Sprintf("%s:%d", opt.Host, raftPort),
+			MetaDir:            filepath.Join(opt.MetaDir, "raft"),
+			Peers:              opt.Peers,
+			SingleMode:         len(opt.Peers) == 0,
+			SnapshotThreshold:  10000,
+			SnapshotInterval:   2 * time.Minute,
+			HeartbeatTimeout:   1 * time.Second,
+			ElectionTimeout:    1 * time.Second,
+			LeaderLeaseTimeout: 500 * time.Millisecond,
+			CommitTimeout:      50 * time.Millisecond,
+			MaxAppendEntries:   32,
+		}, fsm)
+	case RaftEngineNative:
+		if len(opt.Peers) > 0 {
+			return nil, fmt.Errorf("native raft engine is experimental and currently supports only single-node master mode")
+		}
+		store, err := nativeraft.NewFileStore(filepath.Join(opt.MetaDir, "native-raft", "state.json"), decodeNativeMasterCommand)
+		if err != nil {
+			return nil, err
+		}
+		nodeID := fmt.Sprintf("%s:%d", opt.Host, opt.Port)
+		return nativeraft.NewEngine(nativeraft.Config{
+			ID:                nodeID,
+			Peers:             []string{nodeID},
+			Network:           nativeraft.NewMemoryNetwork(),
+			Store:             store,
+			FSM:               nativeMasterFSM{fsm: fsm},
+			ElectionTimeout:   1 * time.Second,
+			HeartbeatInterval: 100 * time.Millisecond,
+			SnapshotThreshold: 10000,
+		})
+	default:
+		return nil, fmt.Errorf("unsupported raft engine %q", opt.RaftEngine)
+	}
+}
+
+type nativeMasterFSM struct {
+	fsm *raft.MasterFSM
+}
+
+func (m nativeMasterFSM) Apply(cmd consensus.Command) {
+	_ = m.fsm.ApplyCommand(cmd)
+}
+
+func (m nativeMasterFSM) Snapshot() ([]byte, error) {
+	return m.fsm.SnapshotBytes()
+}
+
+func (m nativeMasterFSM) Restore(data []byte) error {
+	return m.fsm.RestoreBytes(data)
+}
+
+func decodeNativeMasterCommand(commandType string, payload []byte) (consensus.Command, error) {
+	switch commandType {
+	case "max_file_id":
+		var cmd raft.MaxFileIdCommand
+		if err := json.Unmarshal(payload, &cmd); err != nil {
+			return nil, err
+		}
+		return cmd, nil
+	case "max_volume_id":
+		var cmd raft.MaxVolumeIdCommand
+		if err := json.Unmarshal(payload, &cmd); err != nil {
+			return nil, err
+		}
+		return cmd, nil
+	case "topology_id":
+		var cmd raft.TopologyIdCommand
+		if err := json.Unmarshal(payload, &cmd); err != nil {
+			return nil, err
+		}
+		return cmd, nil
+	default:
+		return nil, fmt.Errorf("unsupported native master command type %q", commandType)
+	}
 }
 
 // handleFSMEvents reacts to replicated state changes from the FSM.

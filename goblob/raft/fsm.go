@@ -74,7 +74,25 @@ func (m *MasterFSM) Apply(log *raft.Log) interface{} {
 	if err := json.Unmarshal(log.Data, &entry); err != nil {
 		return fmt.Errorf("failed to unmarshal log entry: %w", err)
 	}
+	return m.applyEntry(entry)
+}
 
+func (m *MasterFSM) ApplyCommand(cmd consensus.Command) error {
+	payload, err := cmd.Encode()
+	if err != nil {
+		return fmt.Errorf("failed to encode command payload: %w", err)
+	}
+	resp := m.applyEntry(LogEntry{
+		Type:    cmd.Type(),
+		Payload: json.RawMessage(payload),
+	})
+	if err, ok := resp.(error); ok {
+		return err
+	}
+	return nil
+}
+
+func (m *MasterFSM) applyEntry(entry LogEntry) interface{} {
 	var (
 		evt    StateEvent
 		notify bool
@@ -129,8 +147,7 @@ func (m *MasterFSM) Apply(log *raft.Log) interface{} {
 	return nil
 }
 
-// Snapshot creates a point-in-time snapshot of FSM state.
-func (m *MasterFSM) Snapshot() (raft.FSMSnapshot, error) {
+func (m *MasterFSM) SnapshotBytes() ([]byte, error) {
 	m.mu.Lock()
 	state := fsmState{
 		MaxFileId:   m.maxFileId,
@@ -143,18 +160,10 @@ func (m *MasterFSM) Snapshot() (raft.FSMSnapshot, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal snapshot: %w", err)
 	}
-	return &masterFSMSnapshot{data: data}, nil
+	return data, nil
 }
 
-// Restore applies a snapshot, replacing all current FSM state.
-func (m *MasterFSM) Restore(rc io.ReadCloser) error {
-	defer rc.Close()
-
-	data, err := io.ReadAll(rc)
-	if err != nil {
-		return fmt.Errorf("failed to read snapshot: %w", err)
-	}
-
+func (m *MasterFSM) RestoreBytes(data []byte) error {
 	var state fsmState
 	if err := json.Unmarshal(data, &state); err != nil {
 		return fmt.Errorf("failed to unmarshal snapshot: %w", err)
@@ -174,6 +183,27 @@ func (m *MasterFSM) Restore(rc io.ReadCloser) error {
 		TopologyId:  state.TopologyId,
 	})
 	return nil
+}
+
+// Snapshot creates a point-in-time snapshot of FSM state.
+func (m *MasterFSM) Snapshot() (raft.FSMSnapshot, error) {
+	data, err := m.SnapshotBytes()
+	if err != nil {
+		return nil, err
+	}
+	return &masterFSMSnapshot{data: data}, nil
+}
+
+// Restore applies a snapshot, replacing all current FSM state.
+func (m *MasterFSM) Restore(rc io.ReadCloser) error {
+	defer rc.Close()
+
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		return fmt.Errorf("failed to read snapshot: %w", err)
+	}
+
+	return m.RestoreBytes(data)
 }
 
 // CommittedState returns a consistent snapshot of all committed FSM state

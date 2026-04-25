@@ -28,6 +28,7 @@ type MasterCommand struct {
 	pushgatewayURL     string
 	pushgatewayJob     string
 	ratePerSecond      float64
+	raftEngine         string
 }
 
 func init() {
@@ -59,6 +60,7 @@ func (c *MasterCommand) SetFlags(fs *flag.FlagSet) {
 	fs.StringVar(&c.pushgatewayURL, "pushgatewayURL", "", "pushgateway base URL")
 	fs.StringVar(&c.pushgatewayJob, "pushgatewayJob", "goblob-master", "pushgateway job name")
 	fs.Float64Var(&c.ratePerSecond, "ratePerSecond", 0, "per-IP HTTP rate limit (req/sec); 0 = default 200")
+	fs.StringVar(&c.raftEngine, "raft.engine", def.RaftEngine, "consensus engine (hashicorp|native)")
 }
 
 func (c *MasterCommand) Run(ctx context.Context, args []string) error {
@@ -77,6 +79,7 @@ func (c *MasterCommand) Run(ctx context.Context, args []string) error {
 	opt.MaintenanceScripts = c.maintenanceScripts
 	opt.MaintenanceSleep = c.maintenanceSleep
 	opt.RatePerSecond = c.ratePerSecond
+	opt.RaftEngine = c.raftEngine
 
 	rt, err := startMasterRuntime(opt)
 	if err != nil {

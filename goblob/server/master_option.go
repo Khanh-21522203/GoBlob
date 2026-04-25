@@ -2,6 +2,11 @@ package server
 
 import "time"
 
+const (
+	RaftEngineHashicorp = "hashicorp"
+	RaftEngineNative    = "native"
+)
+
 // MasterOption holds configuration for the master server.
 type MasterOption struct {
 	// Host is the hostname or IP to bind to.
@@ -17,6 +22,8 @@ type MasterOption struct {
 	MetaDir string
 	// Peers is the list of initial Raft peer addresses.
 	Peers []string
+	// RaftEngine selects the consensus engine implementation.
+	RaftEngine string
 	// VolumeSizeLimitMB is the maximum size of each volume in megabytes.
 	VolumeSizeLimitMB uint32
 	// DefaultReplication is the default replica placement string (e.g., "000").
@@ -47,6 +54,7 @@ func DefaultMasterOption() *MasterOption {
 		GRPCPort:           19333,
 		MetaDir:            "/tmp/goblob/master",
 		Peers:              nil,
+		RaftEngine:         RaftEngineHashicorp,
 		VolumeSizeLimitMB:  256,
 		DefaultReplication: "000",
 		GarbageThreshold:   0.3,
