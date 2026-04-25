@@ -22,14 +22,20 @@ type StateMachine interface {
 	Apply(consensus.Command)
 }
 
+type SnapshotStateMachine interface {
+	Snapshot() ([]byte, error)
+	Restore([]byte) error
+}
+
 type Config struct {
 	ID                string
 	Peers             []string
 	Network           *MemoryNetwork
-	Store             *MemoryStore
+	Store             Store
 	FSM               StateMachine
 	ElectionTimeout   time.Duration
 	HeartbeatInterval time.Duration
+	SnapshotThreshold uint64
 }
 
 type Engine struct {
@@ -37,7 +43,7 @@ type Engine struct {
 	id                string
 	peers             []string
 	network           *MemoryNetwork
-	store             *MemoryStore
+	store             Store
 	fsm               StateMachine
 	state             State
 	currentTerm       uint64
@@ -45,12 +51,14 @@ type Engine struct {
 	log               []LogEntry
 	commitIndex       uint64
 	lastApplied       uint64
+	snapshot          SnapshotRecord
 	leaderID          string
 	nextIndex         map[string]uint64
 	matchIndex        map[string]uint64
 	electionReset     time.Time
 	electionTimeout   time.Duration
 	heartbeatInterval time.Duration
+	snapshotThreshold uint64
 	stopCh            chan struct{}
 	closed            bool
 	events            eventBus
@@ -78,7 +86,10 @@ func NewEngine(cfg Config) (*Engine, error) {
 		cfg.HeartbeatInterval = 50 * time.Millisecond
 	}
 
-	term, votedFor, entries, commitIndex := cfg.Store.load()
+	persisted, err := cfg.Store.load()
+	if err != nil {
+		return nil, err
+	}
 	e := &Engine{
 		id:                cfg.ID,
 		peers:             append([]string(nil), cfg.Peers...),
@@ -86,18 +97,29 @@ func NewEngine(cfg Config) (*Engine, error) {
 		store:             cfg.Store,
 		fsm:               cfg.FSM,
 		state:             StateFollower,
-		currentTerm:       term,
-		votedFor:          votedFor,
-		log:               entries,
-		commitIndex:       commitIndex,
-		lastApplied:       0,
+		currentTerm:       persisted.CurrentTerm,
+		votedFor:          persisted.VotedFor,
+		log:               persisted.Log,
+		commitIndex:       persisted.CommitIndex,
+		lastApplied:       persisted.Snapshot.Index,
+		snapshot:          persisted.Snapshot,
 		nextIndex:         make(map[string]uint64),
 		matchIndex:        make(map[string]uint64),
 		electionReset:     time.Now(),
 		electionTimeout:   cfg.ElectionTimeout,
 		heartbeatInterval: cfg.HeartbeatInterval,
+		snapshotThreshold: cfg.SnapshotThreshold,
 		stopCh:            make(chan struct{}),
 		events:            newEventBus(),
+	}
+	if len(e.snapshot.Data) > 0 {
+		restorer, ok := e.fsm.(SnapshotStateMachine)
+		if !ok {
+			return nil, errors.New("native raft: snapshot exists but FSM cannot restore")
+		}
+		if err := restorer.Restore(e.snapshot.Data); err != nil {
+			return nil, err
+		}
 	}
 	e.applyCommittedLocked()
 	cfg.Network.Register(e)
@@ -162,6 +184,10 @@ func (e *Engine) Apply(cmd consensus.Command, timeout time.Duration) error {
 				e.commitIndex = index
 				e.persistLocked()
 				e.applyCommittedLocked()
+				if err := e.maybeSnapshotLocked(); err != nil {
+					e.mu.Unlock()
+					return err
+				}
 			}
 			e.mu.Unlock()
 			return nil
@@ -496,6 +522,7 @@ func (e *Engine) advanceCommitLocked() {
 			e.commitIndex = idx
 			e.persistLocked()
 			e.applyCommittedLocked()
+			_ = e.maybeSnapshotLocked()
 			return
 		}
 	}
@@ -514,8 +541,38 @@ func (e *Engine) applyCommittedLocked() {
 	}
 }
 
-func (e *Engine) persistLocked() {
-	e.store.save(e.currentTerm, e.votedFor, e.log, e.commitIndex)
+func (e *Engine) maybeSnapshotLocked() error {
+	if e.snapshotThreshold == 0 || e.commitIndex == 0 {
+		return nil
+	}
+	if e.commitIndex-e.snapshot.Index < e.snapshotThreshold {
+		return nil
+	}
+	snapshotter, ok := e.fsm.(SnapshotStateMachine)
+	if !ok {
+		return nil
+	}
+	data, err := snapshotter.Snapshot()
+	if err != nil {
+		return err
+	}
+	e.snapshot = SnapshotRecord{
+		Index: e.commitIndex,
+		Term:  e.termAtLocked(e.commitIndex),
+		Data:  append([]byte(nil), data...),
+	}
+	e.compactThroughLocked(e.snapshot.Index)
+	return e.persistLocked()
+}
+
+func (e *Engine) persistLocked() error {
+	return e.store.save(persistedState{
+		CurrentTerm: e.currentTerm,
+		VotedFor:    e.votedFor,
+		Log:         e.log,
+		CommitIndex: e.commitIndex,
+		Snapshot:    e.snapshot,
+	})
 }
 
 func (e *Engine) peerSnapshotLocked() []string {
@@ -544,7 +601,7 @@ func (e *Engine) matchCountLocked(index uint64) int {
 
 func (e *Engine) lastIndexLocked() uint64 {
 	if len(e.log) == 0 {
-		return 0
+		return e.snapshot.Index
 	}
 	return e.log[len(e.log)-1].Index
 }
@@ -552,6 +609,9 @@ func (e *Engine) lastIndexLocked() uint64 {
 func (e *Engine) termAtLocked(index uint64) uint64 {
 	if index == 0 {
 		return 0
+	}
+	if index == e.snapshot.Index {
+		return e.snapshot.Term
 	}
 	for _, entry := range e.log {
 		if entry.Index == index {
@@ -584,6 +644,9 @@ func (e *Engine) entriesFromLocked(index uint64) []LogEntry {
 }
 
 func (e *Engine) truncateAfterLocked(index uint64) {
+	if index < e.snapshot.Index {
+		index = e.snapshot.Index
+	}
 	kept := e.log[:0]
 	for _, entry := range e.log {
 		if entry.Index <= index {
@@ -597,6 +660,16 @@ func (e *Engine) truncateAfterLocked(index uint64) {
 	if e.lastApplied > index {
 		e.lastApplied = index
 	}
+}
+
+func (e *Engine) compactThroughLocked(index uint64) {
+	kept := e.log[:0]
+	for _, entry := range e.log {
+		if entry.Index > index {
+			kept = append(kept, entry)
+		}
+	}
+	e.log = kept
 }
 
 func (e *Engine) randomizedElectionTimeoutLocked() time.Duration {
