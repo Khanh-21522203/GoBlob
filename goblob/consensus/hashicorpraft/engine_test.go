@@ -164,3 +164,99 @@ func freeAddressPair(t *testing.T) (httpAddr string, raftAddr string) {
 	t.Fatal("failed to allocate adjacent HTTP/Raft test ports")
 	return "", ""
 }
+
+func BenchmarkHashicorpAssignApply(b *testing.B) {
+	const size = 3
+	engines := make([]consensus.Engine, size)
+	peers := make([]string, size)
+	raftAddrs := make([]string, size)
+	for i := range engines {
+		httpAddr, raftAddr := freeAddressPairB(b)
+		peers[i] = httpAddr
+		raftAddrs[i] = raftAddr
+	}
+	for i := range engines {
+		cfg := &Config{
+			NodeId:             peers[i],
+			BindAddr:           raftAddrs[i],
+			MetaDir:            filepath.Join(b.TempDir(), "raft"),
+			Peers:              peers,
+			SingleMode:         false,
+			SnapshotThreshold:  1000000,
+			SnapshotInterval:   time.Hour,
+			HeartbeatTimeout:   200 * time.Millisecond,
+			ElectionTimeout:    200 * time.Millisecond,
+			LeaderLeaseTimeout: 100 * time.Millisecond,
+			CommitTimeout:      10 * time.Millisecond,
+			MaxAppendEntries:   64,
+		}
+		engine, err := NewEngine(cfg, raft.NewMasterFSM())
+		if err != nil {
+			b.Fatalf("NewEngine(%d) error = %v", i, err)
+		}
+		engines[i] = engine
+		defer engine.Shutdown()
+	}
+	leader := waitHashicorpBenchmarkLeader(b, engines)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := leader.Apply(raft.MaxFileIdCommand{MaxFileId: uint64(i + 1)}, 5*time.Second); err != nil {
+			b.Fatalf("Apply() error = %v", err)
+		}
+	}
+	b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "assigns/s")
+}
+
+func waitHashicorpBenchmarkLeader(b *testing.B, engines []consensus.Engine) consensus.Engine {
+	b.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		var leader consensus.Engine
+		count := 0
+		for _, engine := range engines {
+			if engine != nil && engine.IsLeader() {
+				leader = engine
+				count++
+			}
+		}
+		if count == 1 {
+			return leader
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	b.Fatal("timeout waiting for HashiCorp benchmark leader")
+	return nil
+}
+
+func freeAddressPairB(b *testing.B) (httpAddr string, raftAddr string) {
+	b.Helper()
+	for attempts := 0; attempts < 100; attempts++ {
+		httpListener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			b.Fatalf("listen http candidate: %v", err)
+		}
+		host, portText, err := net.SplitHostPort(httpListener.Addr().String())
+		if err != nil {
+			_ = httpListener.Close()
+			b.Fatalf("split candidate address: %v", err)
+		}
+		port, err := strconv.Atoi(portText)
+		if err != nil || port >= 65535 {
+			_ = httpListener.Close()
+			continue
+		}
+		raftCandidate := net.JoinHostPort(host, strconv.Itoa(port+1))
+		raftListener, err := net.Listen("tcp", raftCandidate)
+		if err != nil {
+			_ = httpListener.Close()
+			continue
+		}
+		httpAddr = httpListener.Addr().String()
+		raftAddr = raftListener.Addr().String()
+		_ = raftListener.Close()
+		_ = httpListener.Close()
+		return httpAddr, raftAddr
+	}
+	b.Fatal("failed to allocate adjacent HTTP/Raft benchmark ports")
+	return "", ""
+}

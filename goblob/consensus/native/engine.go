@@ -30,6 +30,7 @@ type SnapshotStateMachine interface {
 type Config struct {
 	ID                string
 	Peers             []string
+	Transport         Transport
 	Network           *MemoryNetwork
 	Store             Store
 	FSM               StateMachine
@@ -42,7 +43,7 @@ type Engine struct {
 	mu                sync.Mutex
 	id                string
 	peers             []string
-	network           *MemoryNetwork
+	transport         Transport
 	store             Store
 	fsm               StateMachine
 	state             State
@@ -73,8 +74,11 @@ func NewEngine(cfg Config) (*Engine, error) {
 	if len(cfg.Peers) == 0 {
 		return nil, errors.New("native raft: peers are required")
 	}
-	if cfg.Network == nil {
-		return nil, errors.New("native raft: memory network is required")
+	if cfg.Transport == nil {
+		cfg.Transport = cfg.Network
+	}
+	if cfg.Transport == nil {
+		return nil, errors.New("native raft: transport is required")
 	}
 	if cfg.Store == nil {
 		cfg.Store = NewMemoryStore()
@@ -93,7 +97,7 @@ func NewEngine(cfg Config) (*Engine, error) {
 	e := &Engine{
 		id:                cfg.ID,
 		peers:             append([]string(nil), cfg.Peers...),
-		network:           cfg.Network,
+		transport:         cfg.Transport,
 		store:             cfg.Store,
 		fsm:               cfg.FSM,
 		state:             StateFollower,
@@ -122,7 +126,9 @@ func NewEngine(cfg Config) (*Engine, error) {
 		}
 	}
 	e.applyCommittedLocked()
-	cfg.Network.Register(e)
+	if err := cfg.Transport.Start(e); err != nil {
+		return nil, err
+	}
 
 	go e.electionLoop()
 	go e.heartbeatLoop()
@@ -268,7 +274,9 @@ func (e *Engine) Shutdown() error {
 	e.closed = true
 	close(e.stopCh)
 	e.mu.Unlock()
-	e.network.Unregister(e.id)
+	if e.transport != nil {
+		return e.transport.Shutdown(e.id)
+	}
 	return nil
 }
 
@@ -341,7 +349,7 @@ func (e *Engine) startElection() {
 		if peer == e.id {
 			continue
 		}
-		resp, ok := e.network.RequestVote(peer, requestVoteRequest{
+		resp, ok := e.transport.RequestVote(peer, requestVoteRequest{
 			Term:         term,
 			CandidateID:  e.id,
 			LastLogIndex: lastIndex,
@@ -432,6 +440,42 @@ func (e *Engine) handleAppendEntries(req appendEntriesRequest) appendEntriesResp
 	return appendEntriesResponse{Term: e.currentTerm, Success: true, MatchIndex: e.lastIndexLocked()}
 }
 
+func (e *Engine) handleInstallSnapshot(req installSnapshotRequest) installSnapshotResponse {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if req.Term < e.currentTerm {
+		return installSnapshotResponse{Term: e.currentTerm}
+	}
+	if req.Term > e.currentTerm || e.state != StateFollower {
+		e.stepDownLocked(req.Term, req.LeaderID)
+	}
+	e.leaderID = req.LeaderID
+	e.electionReset = time.Now()
+
+	restorer, ok := e.fsm.(SnapshotStateMachine)
+	if !ok {
+		return installSnapshotResponse{Term: e.currentTerm}
+	}
+	if err := restorer.Restore(req.Data); err != nil {
+		return installSnapshotResponse{Term: e.currentTerm}
+	}
+	e.snapshot = SnapshotRecord{
+		Index: req.LastIncludedIndex,
+		Term:  req.LastIncludedTerm,
+		Data:  append([]byte(nil), req.Data...),
+	}
+	e.compactThroughLocked(req.LastIncludedIndex)
+	if e.commitIndex < req.LastIncludedIndex {
+		e.commitIndex = req.LastIncludedIndex
+	}
+	if e.lastApplied < req.LastIncludedIndex {
+		e.lastApplied = req.LastIncludedIndex
+	}
+	e.persistLocked()
+	return installSnapshotResponse{Term: e.currentTerm, Success: true}
+}
+
 func (e *Engine) replicateAll() {
 	e.mu.Lock()
 	peers := e.peerSnapshotLocked()
@@ -454,6 +498,36 @@ func (e *Engine) replicateTo(peer string) {
 	if next == 0 {
 		next = e.lastIndexLocked() + 1
 	}
+	if next <= e.snapshot.Index && len(e.snapshot.Data) > 0 {
+		req := installSnapshotRequest{
+			Term:              e.currentTerm,
+			LeaderID:          e.id,
+			LastIncludedIndex: e.snapshot.Index,
+			LastIncludedTerm:  e.snapshot.Term,
+			Data:              append([]byte(nil), e.snapshot.Data...),
+		}
+		term := e.currentTerm
+		e.mu.Unlock()
+
+		resp, ok := e.transport.InstallSnapshot(peer, req)
+		if !ok {
+			return
+		}
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		if e.closed || e.currentTerm != term || e.state != StateLeader {
+			return
+		}
+		if resp.Term > e.currentTerm {
+			e.stepDownLocked(resp.Term, "")
+			return
+		}
+		if resp.Success {
+			e.matchIndex[peer] = req.LastIncludedIndex
+			e.nextIndex[peer] = req.LastIncludedIndex + 1
+		}
+		return
+	}
 	prev := next - 1
 	req := appendEntriesRequest{
 		Term:         e.currentTerm,
@@ -466,7 +540,7 @@ func (e *Engine) replicateTo(peer string) {
 	term := e.currentTerm
 	e.mu.Unlock()
 
-	resp, ok := e.network.AppendEntries(peer, req)
+	resp, ok := e.transport.AppendEntries(peer, req)
 	if !ok {
 		return
 	}

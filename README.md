@@ -123,6 +123,46 @@ All results from a single Docker host (bridge network, in-container benchmark bi
 - Large file filer-write goes through ChunkUpload → assign → volume PUT. Filer-read fetches each chunk from the volume server by looking up the location via the master.
 - Download throughput for large files is bounded by the volume server's read I/O + Docker bridge network copy.
 
+### Native Raft transport microbenchmarks
+
+These benchmarks exercise the experimental native Raft transport layer added for future optimization work. They run on localhost with `-benchtime=100x`, so the numbers are useful for relative comparison and regression detection, not production sizing.
+
+```bash
+GOCACHE=/tmp/gocache GOMODCACHE=/tmp/gomodcache \
+  go test -run '^$' \
+  -bench 'BenchmarkTransport|BenchmarkNativeAssignApply|BenchmarkHashicorpAssignApply' \
+  -benchtime=100x \
+  ./goblob/consensus/native ./goblob/consensus/hashicorpraft
+
+GOCACHE=/tmp/gocache GOMODCACHE=/tmp/gomodcache \
+  go test -run '^$' \
+  -bench 'BenchmarkNativeAssignApply/tcp_three_node' \
+  -benchtime=200x \
+  -cpuprofile /tmp/goblob-native-assign.cpu \
+  ./goblob/consensus/native
+```
+
+| Benchmark | Result |
+|-----------|--------|
+| native heartbeat, memory transport | 232.3 ns/op |
+| native heartbeat, TCP transport | 114.157 us/op |
+| native append, memory transport | 100.7 ns/op |
+| native append, TCP transport | 125.615 us/op |
+| native batch append, memory transport | 2.043 us/op, 31.64M entries/s |
+| native batch append, TCP transport | 274.595 us/op, 233K entries/s |
+| native 1 MiB snapshot install, memory transport | 3.027 ms/op, 346 MB/s |
+| native 1 MiB snapshot install, TCP transport | 12.290 ms/op, 85 MB/s |
+| native assign apply, single-node memory | 2.687 us/op, 379K assigns/s |
+| native assign apply, 3-node TCP | 267.569 us/op, 3.7K assigns/s |
+| HashiCorp Raft assign apply, 3-node TCP | 1.077 ms/op, 932 assigns/s |
+
+Transport decision notes:
+- Native TCP is intentionally simple today: JSON framing, one TCP connection per RPC, and no binary codec or connection reuse.
+- Batch append already changes the network profile substantially: native TCP batch append reached 233K entries/s in this local benchmark, so batching should be tuned before considering kernel-bypass networking.
+- Snapshot transfer is dominated by payload encode/copy and FSM restore behavior in this benchmark; optimize binary framing and streaming before lower-level network work.
+- The native file store still uses simple JSON persistence, so fsync/write-path policy should be designed before production benchmarking.
+- DPDK is not justified by the current evidence. The next transport improvements should be connection reuse, binary encoding, batching policy, and async disk/write pipeline work.
+
 ## Project Layout
 
 ```

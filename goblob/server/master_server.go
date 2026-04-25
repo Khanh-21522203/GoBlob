@@ -176,7 +176,7 @@ func newMasterConsensusEngine(opt *MasterOption, fsm *raft.MasterFSM) (consensus
 		return nativeraft.NewEngine(nativeraft.Config{
 			ID:                nodeID,
 			Peers:             []string{nodeID},
-			Network:           nativeraft.NewMemoryNetwork(),
+			Transport:         nativeraft.NewMemoryNetwork(),
 			Store:             store,
 			FSM:               nativeMasterFSM{fsm: fsm},
 			ElectionTimeout:   1 * time.Second,
